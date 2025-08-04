@@ -1,32 +1,14 @@
 {
-  "name": "auth-client",
-  "version": "1.0.0",
+  "name": "@spidy092/auth-client",                      
+  "version": "1.0.0",                        
   "description": "Scalable frontend auth SDK for centralized login using Keycloak + Auth Service.",
-  "main": "index.js",
-  "module": "index.js",
-  "type": "module",
+  "main": "index.js",                         
+  "module": "index.js",                                           
+  "type": "module",                           
   "exports": {
     ".": "./index.js",
     "./react/AuthProvider": "./react/AuthProvider.jsx",
     "./react/useAuth": "./react/useAuth.js"
-  },
-  "keywords": [
-    "auth",
-    "sdk",
-    "keycloak",
-    "react",
-    "access-token",
-    "centralized-login"
-  ],
-  "author": "Spiddyy",
-  "license": "MIT",
-  "dependencies": {
-    "axios": "^1.6.0",
-    "jwt-decode": "^4.0.0",
-    "react": ">=17.0.0"
-  },
-  "peerDependencies": {
-    "react": ">=17.0.0"
   },
   "files": [
     "*.js",
@@ -38,7 +20,40 @@
     "api.js",
     "README.md"
   ],
+  "keywords": [
+    "auth",
+    "sdk",
+    "keycloak",
+    "react",
+    "access-token",
+    "centralized-login"
+  ],
+  "author": {
+    "name": "Spiddyy",
+    "url": "https://github.com/Spidy092"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Spidy092/auth-client.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Spidy092/auth-client/issues"
+  },
+  "homepage": "https://github.com/Spidy092/auth-client#readme",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "jwt-decode": "^4.0.0"
+  },
+  "peerDependencies": {
+    "react": ">=17.0.0"
+  },
+  "engines": {
+    "node": ">=14.0.0",
+    "npm": ">=6.0.0"
+  },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prepublishOnly": "echo 'Run build scripts here if needed'"
   }
 }
