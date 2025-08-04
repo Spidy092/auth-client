@@ -7,7 +7,7 @@ A lightweight, framework-agnostic authentication client SDK designed for scalabl
 ## 📦 Installation
 
 ```bash
-npm install auth-client
+npm install @spidy092/auth-client
 ```
 
 ---
