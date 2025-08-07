@@ -14,6 +14,12 @@ export function login(clientKeyArg, redirectUriArg, stateArg) {
   const redirectUri = redirectUriArg || defaultRedirectUri;
   const state = stateArg || crypto.randomUUID();
 
+  console.log('Initiating login with parameters:', {
+    clientKey,
+    redirectUri,
+    state,});
+  
+
   if (!clientKey || !redirectUri) {
     throw new Error('Missing clientKey or redirectUri');
   }
