@@ -3,10 +3,10 @@ import { setToken, clearToken, getToken } from './token';
 import { getConfig } from './config';
 
 export function login(clientKeyArg, redirectUriArg, stateArg) {
-  const { 
+  const {
     clientKey: defaultClientKey, 
     authBaseUrl, 
-    redirectUri: defaultRedirectUri,
+    redirectUri: defaultRedirectUri, 
     accountUiUrl 
   } = getConfig();
 
@@ -18,21 +18,31 @@ export function login(clientKeyArg, redirectUriArg, stateArg) {
     throw new Error('Missing clientKey or redirectUri');
   }
 
-  // Store original app info for return after auth
+  // Store state for callback validation
   sessionStorage.setItem('authState', state);
   sessionStorage.setItem('originalApp', clientKey);
   sessionStorage.setItem('returnUrl', redirectUri);
 
-  // Redirect to centralized Account UI instead of direct auth service
+  // --- ENTERPRISE LOGIC ---
+  // If we are already in Account-UI, go straight to the backend
+  if (window.location.origin === accountUiUrl && clientKey === 'account-ui') {
+    // Direct SSO kick-off for Account-UI
+    const backendLoginUrl = `${authBaseUrl}/login/${clientKey}?redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
+    console.log('Redirecting directly to auth backend:', backendLoginUrl);
+    window.location.href = backendLoginUrl;
+    return;
+  }
+
+  // Otherwise, centralized login flow (for other apps)
   const accountLoginUrl = `${accountUiUrl}/login?` + new URLSearchParams({
     client: clientKey,
     redirect_uri: redirectUri,
     state: state
   });
-
-  console.log('Redirecting to Account UI:', accountLoginUrl);
+  console.log('Redirecting to centralized Account UI:', accountLoginUrl);
   window.location.href = accountLoginUrl;
 }
+
 
 export function logout() {
   const { clientKey, authBaseUrl, accountUiUrl } = getConfig();
