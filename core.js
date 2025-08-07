@@ -19,9 +19,9 @@ export function login(clientKeyArg, redirectUriArg, stateArg) {
   }
 
   // Store state for callback validation
-  sessionStorage.setItem('authState', state);
-  sessionStorage.setItem('originalApp', clientKey);
-  sessionStorage.setItem('returnUrl', redirectUri);
+  localStorage.setItem('authState', state);
+  localStorage.setItem('originalApp', clientKey);
+  localStorage.setItem('returnUrl', redirectUri);
 
   // --- ENTERPRISE LOGIC ---
   // If we are already in Account-UI, go straight to the backend
@@ -73,16 +73,16 @@ export function handleCallback() {
   const accessToken = params.get('access_token');
   const error = params.get('error');
   const state = params.get('state');
-  const storedState = sessionStorage.getItem('authState');
+  const storedState = localStorage.getItem('authState');
 
   // Validate state
   if (state && storedState && state !== storedState) {
     throw new Error('Invalid state. Possible CSRF attack.');
   }
 
-  sessionStorage.removeItem('authState');
-  sessionStorage.removeItem('originalApp');
-  sessionStorage.removeItem('returnUrl');
+  localStorage.removeItem('authState');
+  localStorage.removeItem('originalApp');
+  localStorage.removeItem('returnUrl');
 
   if (error) {
     throw new Error(`Authentication failed: ${error}`);
