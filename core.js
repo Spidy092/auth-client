@@ -75,6 +75,14 @@ export function handleCallback() {
   const state = params.get('state');
   const storedState = localStorage.getItem('authState');
 
+  console.log('Handling authentication callback:', {
+    accessToken,
+    error,
+    state,
+    storedState
+  });
+  
+
   // Validate state
   if (state && storedState && state !== storedState) {
     throw new Error('Invalid state. Possible CSRF attack.');
