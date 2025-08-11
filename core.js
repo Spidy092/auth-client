@@ -1,8 +1,7 @@
-
 import { setToken, clearToken, getToken } from './token';
 import { getConfig } from './config';
 
-export function login(clientKeyArg, redirectUriArg, stateArg) {
+export function login(clientKeyArg, redirectUriArg) {  // Removed stateArg
   const {
     clientKey: defaultClientKey, 
     authBaseUrl, 
@@ -12,43 +11,41 @@ export function login(clientKeyArg, redirectUriArg, stateArg) {
 
   const clientKey = clientKeyArg || defaultClientKey;
   const redirectUri = redirectUriArg || defaultRedirectUri;
-  const state = stateArg || crypto.randomUUID();
+  // Removed state generation
 
   console.log('Initiating login with parameters:', {
     clientKey,
-    redirectUri,
-    state,});
+    redirectUri
+    // Removed state from logging
+  });
   
-
   if (!clientKey || !redirectUri) {
     throw new Error('Missing clientKey or redirectUri');
   }
 
-  // Store state for callback validation
-  sessionStorage.setItem('authState', state);
+  // Store only app info, no state
   sessionStorage.setItem('originalApp', clientKey);
   sessionStorage.setItem('returnUrl', redirectUri);
 
   // --- ENTERPRISE LOGIC ---
   // If we are already in Account-UI, go straight to the backend
   if (window.location.origin === accountUiUrl && clientKey === 'account-ui') {
-    // Direct SSO kick-off for Account-UI
-    const backendLoginUrl = `${authBaseUrl}/login/${clientKey}?redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
+    // Direct SSO kick-off for Account-UI (no state parameter)
+    const backendLoginUrl = `${authBaseUrl}/login/${clientKey}?redirect_uri=${encodeURIComponent(redirectUri)}`;
     console.log('Redirecting directly to auth backend:', backendLoginUrl);
     window.location.href = backendLoginUrl;
     return;
   }
 
-  // Otherwise, centralized login flow (for other apps)
+  // Otherwise, centralized login flow (for other apps, no state)
   const accountLoginUrl = `${accountUiUrl}/login?` + new URLSearchParams({
     client: clientKey,
-    redirect_uri: redirectUri,
-    state: state
+    redirect_uri: redirectUri
+    // Removed state
   });
   console.log('Redirecting to centralized Account UI:', accountLoginUrl);
   window.location.href = accountLoginUrl;
 }
-
 
 export function logout() {
   const { clientKey, authBaseUrl, accountUiUrl } = getConfig();
@@ -78,28 +75,16 @@ export function handleCallback() {
   const params = new URLSearchParams(window.location.search);
   const accessToken = params.get('access_token');
   const error = params.get('error');
-  const state = params.get('state');
-  const storedState = sessionStorage.getItem('authState');
+  // Removed state handling completely
 
   console.log('Handling authentication callback:', {
     accessToken,
-    error,
-    state,
-    storedState
+    error
+    // Removed state from logging
   });
   
+  // Removed all state validation
 
-  // Validate state
-  // if (state && storedState && state !== storedState) {
-  //   throw new Error('Invalid state. Possible CSRF attack.');
-  // }
-
-  
-  if (!state && !storedState ) {
-    throw new Error('no state. Possible CSRF attack.');
-  }
-
-  sessionStorage.removeItem('authState');
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
 
