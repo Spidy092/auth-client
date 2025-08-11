@@ -1,6 +1,6 @@
 {
   "name": "@spidy092/auth-client",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Scalable frontend auth SDK for centralized login using Keycloak + Auth Service.",
   "main": "index.js",
   "module": "index.js",
