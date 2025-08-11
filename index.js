@@ -1,6 +1,6 @@
 // auth-client/index.js
 import { setConfig, getConfig, isRouterMode } from './config';
-import { login, logout, handleCallback, refreshToken } from './core';
+import { login, logout, handleCallback, refreshToken, resetCallbackState } from './core';
 import { getToken, setToken, clearToken } from './token';
 import api from './api';
 import { decodeToken, isTokenExpired } from './utils/jwt';
@@ -9,13 +9,14 @@ export const auth = {
   // 🔧 Config
   setConfig,
   getConfig,
-  isRouterMode, // ✅ Expose router mode check
+  isRouterMode,
 
   // 🔐 Core flows
   login,
   logout,
   handleCallback,
   refreshToken,
+  resetCallbackState, // ✅ Export reset function
 
   // 🔑 Token management
   getToken,
