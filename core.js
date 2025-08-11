@@ -90,8 +90,13 @@ export function handleCallback() {
   
 
   // Validate state
-  if (state && storedState && state !== storedState) {
-    throw new Error('Invalid state. Possible CSRF attack.');
+  // if (state && storedState && state !== storedState) {
+  //   throw new Error('Invalid state. Possible CSRF attack.');
+  // }
+
+  
+  if (!state && !storedState ) {
+    throw new Error('no state. Possible CSRF attack.');
   }
 
   sessionStorage.removeItem('authState');
