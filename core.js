@@ -1,112 +1,141 @@
+// auth-client/core.js
 import { setToken, clearToken, getToken } from './token';
-import { getConfig } from './config';
+import { getConfig, isRouterMode } from './config';
 
-export function login(clientKeyArg, redirectUriArg) {  // Removed stateArg
+export function login(clientKeyArg, redirectUriArg) {
   const {
-    clientKey: defaultClientKey, 
-    authBaseUrl, 
-    redirectUri: defaultRedirectUri, 
-    accountUiUrl 
+    clientKey: defaultClientKey,
+    authBaseUrl,
+    redirectUri: defaultRedirectUri,
+    accountUiUrl
   } = getConfig();
 
   const clientKey = clientKeyArg || defaultClientKey;
   const redirectUri = redirectUriArg || defaultRedirectUri;
-  // Removed state generation
 
-  console.log('Initiating login with parameters:', {
+  console.log('🔄 Smart Login initiated:', {
+    mode: isRouterMode() ? 'ROUTER' : 'CLIENT',
     clientKey,
     redirectUri
-    // Removed state from logging
   });
-  
+
   if (!clientKey || !redirectUri) {
     throw new Error('Missing clientKey or redirectUri');
   }
 
-  // Store only app info, no state
+  // Store app info
   sessionStorage.setItem('originalApp', clientKey);
   sessionStorage.setItem('returnUrl', redirectUri);
 
-  // --- ENTERPRISE LOGIC ---
-  // If we are already in Account-UI, go straight to the backend
-  if (window.location.origin === accountUiUrl && clientKey === 'account-ui') {
-    // Direct SSO kick-off for Account-UI (no state parameter)
-    const backendLoginUrl = `${authBaseUrl}/login/${clientKey}?redirect_uri=${encodeURIComponent(redirectUri)}`;
-    console.log('Redirecting directly to auth backend:', backendLoginUrl);
-    window.location.href = backendLoginUrl;
-    return;
+  // ✅ Smart Router Logic
+  if (isRouterMode()) {
+    // Router mode: Direct backend authentication
+    return routerLogin(clientKey, redirectUri);
+  } else {
+    // Client mode: Redirect to centralized login
+    return clientLogin(clientKey, redirectUri);
   }
+}
 
-  // Otherwise, centralized login flow (for other apps, no state)
-  const accountLoginUrl = `${accountUiUrl}/login?` + new URLSearchParams({
-    client: clientKey,
-    redirect_uri: redirectUri
-    // Removed state
+// ✅ Router mode: Direct backend call
+function routerLogin(clientKey, redirectUri) {
+  const { authBaseUrl } = getConfig();
+  const backendLoginUrl = `${authBaseUrl}/login/${clientKey}?redirect_uri=${encodeURIComponent(redirectUri)}`;
+  
+  console.log('🏭 Router Login: Direct backend authentication', {
+    clientKey,
+    redirectUri,
+    backendUrl: backendLoginUrl
   });
-  console.log('Redirecting to centralized Account UI:', accountLoginUrl);
-  window.location.href = accountLoginUrl;
+
+  window.location.href = backendLoginUrl;
+}
+
+// ✅ Client mode: Centralized login
+function clientLogin(clientKey, redirectUri) {
+  const { accountUiUrl } = getConfig();
+  const centralizedLoginUrl = `${accountUiUrl}/login?client=${clientKey}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+  
+  console.log('🔄 Client Login: Redirecting to centralized login', {
+    clientKey,
+    redirectUri,
+    centralizedUrl: centralizedLoginUrl
+  });
+
+  window.location.href = centralizedLoginUrl;
 }
 
 export function logout() {
   const { clientKey, authBaseUrl, accountUiUrl } = getConfig();
   const token = getToken();
-  
-  console.log('Initiating logout for client:', clientKey);
+
+  console.log('🚪 Smart Logout initiated:', {
+    mode: isRouterMode() ? 'ROUTER' : 'CLIENT',
+    clientKey,
+    hasToken: !!token
+  });
 
   // Clear local storage immediately
   clearToken();
   sessionStorage.clear();
-  // Don't clear localStorage completely - might break other stuff
-  // localStorage.clear(); // Remove this line
 
-  // Call backend logout if we have a token
+  if (isRouterMode()) {
+    // Router logout: Backend logout for all sessions
+    return routerLogout(clientKey, authBaseUrl, accountUiUrl, token);
+  } else {
+    // Client logout: Simple redirect to centralized login
+    return clientLogout(clientKey, accountUiUrl);
+  }
+}
+
+// ✅ Router logout
+async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
+  console.log('🏭 Router Logout: Backend logout for all sessions');
+  
   if (token) {
-    fetch(`${authBaseUrl}/logout/${clientKey}`, {
-      method: 'POST',
-      credentials: 'include', // ✅ CRITICAL: This sends cookies
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      }
-    })
-    .then(response => response.json())
-    .then(data => {
+    try {
+      const response = await fetch(`${authBaseUrl}/logout/${clientKey}`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      const data = await response.json();
       console.log('Backend logout response:', data);
-      
-      // If we get a Keycloak logout URL, redirect there
+
       if (data.keycloakLogoutUrl) {
         window.location.href = data.keycloakLogoutUrl;
         return;
       }
-      
-      // Otherwise redirect to login
-      window.location.href = `${accountUiUrl}/login`;
-    })
-    .catch(error => {
-      console.error('Logout error:', error);
-      // Always redirect to login even on error
-      window.location.href = `${accountUiUrl}/login`;
-    });
-  } else {
-    // No token, just redirect to login
-    window.location.href = `${accountUiUrl}/login`;
+    } catch (error) {
+      console.warn('Backend logout failed:', error);
+    }
   }
+
+  // Fallback: redirect to login
+  window.location.href = '/login';
 }
 
+// ✅ Client logout
+function clientLogout(clientKey, accountUiUrl) {
+  console.log('🔄 Client Logout: Redirecting to centralized login');
+  const logoutUrl = `${accountUiUrl}/login?client=${clientKey}&logout=true`;
+  window.location.href = logoutUrl;
+}
 
 export function handleCallback() {
   const params = new URLSearchParams(window.location.search);
   const accessToken = params.get('access_token');
   const error = params.get('error');
-  // Removed state handling completely
 
-  console.log('Handling authentication callback:', {
-    accessToken,
+  console.log('🔄 Handling authentication callback:', {
+    mode: isRouterMode() ? 'ROUTER' : 'CLIENT',
+    hasAccessToken: !!accessToken,
     error
-    // Removed state from logging
   });
-  
-  // Removed all state validation
 
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
@@ -125,6 +154,8 @@ export function handleCallback() {
 
 export async function refreshToken() {
   const { clientKey, authBaseUrl } = getConfig();
+  
+  console.log('🔄 Refreshing token:', { clientKey, mode: isRouterMode() ? 'ROUTER' : 'CLIENT' });
   
   try {
     const response = await fetch(`${authBaseUrl}/refresh/${clientKey}`, {

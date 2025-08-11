@@ -1,8 +1,11 @@
+// auth-client/config.js
 let config = {
   clientKey: null,
   authBaseUrl: null,
   redirectUri: null,
-  usePkce: false, // optional future
+  accountUiUrl: null,
+  isRouter: false, // ✅ Add router flag
+  usePkce: false,
 };
 
 export function setConfig(customConfig = {}) {
@@ -14,13 +17,21 @@ export function setConfig(customConfig = {}) {
     ...config,
     ...customConfig,
     redirectUri: customConfig.redirectUri || window.location.origin + '/callback',
+    // ✅ Auto-detect router mode
+    isRouter: customConfig.isRouter || customConfig.clientKey === 'account-ui'
   };
+
+  console.log(`🔧 Auth Client Mode: ${config.isRouter ? 'ROUTER' : 'CLIENT'}`, {
+    clientKey: config.clientKey,
+    isRouter: config.isRouter
+  });
 }
 
 export function getConfig() {
   return { ...config };
 }
 
-
-
-// pass client key and authbaseurl and redirectUri
+// ✅ Helper function
+export function isRouterMode() {
+  return config.isRouter;
+}
