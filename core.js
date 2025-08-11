@@ -51,25 +51,48 @@ export function logout() {
   const { clientKey, authBaseUrl, accountUiUrl } = getConfig();
   const token = getToken();
   
-  if (!token) {
-    window.location.href = `${accountUiUrl}/login`;
-    return;
-  }
+  console.log('Initiating logout for client:', clientKey);
 
+  // Clear local storage immediately
   clearToken();
-  
-  // Call logout endpoint
-  fetch(`${authBaseUrl}/logout/${clientKey}`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      'Authorization': `Bearer ${token}`
-    }
-  }).catch(console.error);
+  sessionStorage.clear();
+  // Don't clear localStorage completely - might break other stuff
+  // localStorage.clear(); // Remove this line
 
-  // Redirect to Account UI logout page
-  window.location.href = `${accountUiUrl}/logout?client=${clientKey}`;
+  // Call backend logout if we have a token
+  if (token) {
+    fetch(`${authBaseUrl}/logout/${clientKey}`, {
+      method: 'POST',
+      credentials: 'include', // ✅ CRITICAL: This sends cookies
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    })
+    .then(response => response.json())
+    .then(data => {
+      console.log('Backend logout response:', data);
+      
+      // If we get a Keycloak logout URL, redirect there
+      if (data.keycloakLogoutUrl) {
+        window.location.href = data.keycloakLogoutUrl;
+        return;
+      }
+      
+      // Otherwise redirect to login
+      window.location.href = `${accountUiUrl}/login`;
+    })
+    .catch(error => {
+      console.error('Logout error:', error);
+      // Always redirect to login even on error
+      window.location.href = `${accountUiUrl}/login`;
+    });
+  } else {
+    // No token, just redirect to login
+    window.location.href = `${accountUiUrl}/login`;
+  }
 }
+
 
 export function handleCallback() {
   const params = new URLSearchParams(window.location.search);
