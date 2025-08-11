@@ -212,26 +212,26 @@ export async function refreshToken() {
 
 
 
-export async function refreshToken() {
-  const { clientKey, authBaseUrl } = getConfig();
+// export async function refreshToken() {
+//   const { clientKey, authBaseUrl } = getConfig();
   
-  console.log('🔄 Refreshing token:', { clientKey, mode: isRouterMode() ? 'ROUTER' : 'CLIENT' });
+//   console.log('🔄 Refreshing token:', { clientKey, mode: isRouterMode() ? 'ROUTER' : 'CLIENT' });
   
-  try {
-    const response = await fetch(`${authBaseUrl}/refresh/${clientKey}`, {
-      method: 'POST',
-      credentials: 'include',
-    });
+//   try {
+//     const response = await fetch(`${authBaseUrl}/refresh/${clientKey}`, {
+//       method: 'POST',
+//       credentials: 'include',
+//     });
 
-    if (!response.ok) {
-      throw new Error('Refresh failed');
-    }
+//     if (!response.ok) {
+//       throw new Error('Refresh failed');
+//     }
 
-    const { access_token } = await response.json();
-    setToken(access_token);
-    return access_token;
-  } catch (err) {
-    clearToken();
-    throw err;
-  }
-}
+//     const { access_token } = await response.json();
+//     setToken(access_token);
+//     return access_token;
+//   } catch (err) {
+//     clearToken();
+//     throw err;
+//   }
+// }
