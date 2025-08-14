@@ -93,7 +93,15 @@ export function removeTokenListener(listener) {
     console.log('📎 Token listener removed, remaining listeners:', listeners.size);
   }
   return removed;
+
+  
 }
+
+export function getListenerCount() {
+  return listeners.size;  
+}
+
+
 
 // ✅ Debug function to see current listeners
 // ✅ Decode JWT payload safely
