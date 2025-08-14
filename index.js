@@ -3,7 +3,7 @@ import { setConfig, getConfig, isRouterMode } from './config';
 import { login, logout, handleCallback, refreshToken, resetCallbackState } from './core';
 import { getToken, setToken, clearToken, addTokenListener, removeTokenListener, getListenerCount } from './token';
 import api from './api';
-import { decodeToken, isTokenExpired } from './utils/jwt';
+import { decodeToken, isTokenExpired, isAuthenticated } from './utils/jwt';
 
 export const auth = {
   // 🔧 Config
@@ -32,6 +32,7 @@ export const auth = {
   // 🧪 Utilities
   decodeToken,
   isTokenExpired,
+  isAuthenticated,
 
   // 🔄 Auto-refresh setup
   startTokenRefresh: () => {

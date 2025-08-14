@@ -96,6 +96,46 @@ export function removeTokenListener(listener) {
 }
 
 // ✅ Debug function to see current listeners
-export function getListenerCount() {
-  return listeners.size;
+// ✅ Decode JWT payload safely
+// export function decodeToken(token) {
+//   if (!token) return null;
+
+//   try {
+//     const base64Url = token.split('.')[1]; // JWT payload is 2nd part
+//     if (!base64Url) return null;
+
+//     const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+//     const jsonPayload = decodeURIComponent(
+//       atob(base64)
+//         .split('')
+//         .map((c) => `%${('00' + c.charCodeAt(0).toString(16)).slice(-2)}`)
+//         .join('')
+//     );
+
+//     return JSON.parse(jsonPayload);
+//   } catch (err) {
+//     console.warn('Could not decode token:', err);
+//     return null;
+//   }
+// }
+
+// // ✅ Check if JWT is expired (with optional buffer)
+// export function isTokenExpired(token, bufferSeconds = 0) {
+//   if (!token) return true;
+
+//   const decoded = decodeToken(token);
+//   if (!decoded || !decoded.exp) return true; // no exp claim → treat as expired
+
+//   const expiryTime = decoded.exp * 1000; // exp is in seconds → convert to ms
+//   const currentTime = Date.now();
+
+//   // Add buffer (e.g., 60s) to expire slightly earlier
+//   return currentTime >= expiryTime - bufferSeconds * 1000;
+// }
+
+// ✅ Check if user is authenticated
+export function isAuthenticated() {
+  const token = getToken();
+  return !!token && !isTokenExpired(token);
 }
+
