@@ -46,7 +46,7 @@ export function login(clientKeyArg, redirectUriArg) {
 // ✅ Router mode: Direct backend call
 function routerLogin(clientKey, redirectUri) {
   const { authBaseUrl } = getConfig();
-  const backendLoginUrl = `${authBaseUrl}/login/${clientKey}?redirect_uri=${encodeURIComponent(redirectUri)}`;
+  const backendLoginUrl = `${authBaseUrl}/auth/login/${clientKey}?redirect_uri=${encodeURIComponent(redirectUri)}`;
   
   console.log('🏭 Router Login: Direct backend authentication', {
     clientKey,
@@ -60,7 +60,7 @@ function routerLogin(clientKey, redirectUri) {
 // ✅ Client mode: Centralized login
 function clientLogin(clientKey, redirectUri) {
   const { accountUiUrl } = getConfig();
-  const centralizedLoginUrl = `${accountUiUrl}/login?client=${clientKey}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+  const centralizedLoginUrl = `${accountUiUrl}/auth/login?client=${clientKey}&redirect_uri=${encodeURIComponent(redirectUri)}`;
   
   console.log('🔄 Client Login: Redirecting to centralized login', {
     clientKey,
