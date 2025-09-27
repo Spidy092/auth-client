@@ -46,7 +46,7 @@ export function login(clientKeyArg, redirectUriArg) {
 // ✅ Router mode: Direct backend call
 function routerLogin(clientKey, redirectUri) {
   const { authBaseUrl } = getConfig();
-  const backendLoginUrl = `${authBaseUrl}/auth/login/${clientKey}?redirect_uri=${encodeURIComponent(redirectUri)}`;
+  const backendLoginUrl = `${authBaseUrl}/login/${clientKey}?redirect_uri=${encodeURIComponent(redirectUri)}`;
   
   console.log('🏭 Router Login: Direct backend authentication', {
     clientKey,
@@ -60,7 +60,7 @@ function routerLogin(clientKey, redirectUri) {
 // ✅ Client mode: Centralized login
 function clientLogin(clientKey, redirectUri) {
   const { accountUiUrl } = getConfig();
-  const centralizedLoginUrl = `${accountUiUrl}/auth/login?client=${clientKey}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+  const centralizedLoginUrl = `${accountUiUrl}/login?client=${clientKey}&redirect_uri=${encodeURIComponent(redirectUri)}`;
   
   console.log('🔄 Client Login: Redirecting to centralized login', {
     clientKey,
@@ -97,33 +97,51 @@ export function logout() {
 
 // ✅ Router logout
 async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
-  console.log('🏭 Router Logout: Backend logout for all sessions');
-  
-  if (token) {
-    try {
-      const response = await fetch(`${authBaseUrl}/logout/${clientKey}`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
+  console.log('🏭 Enhanced Router Logout with sessionStorage');
 
-      const data = await response.json();
-      console.log('Backend logout response:', data);
+  const refreshToken = sessionStorage.getItem('refreshToken');
+  console.log('Refresh token from storage:', refreshToken ? 'FOUND' : 'MISSING');
 
-      if (data.keycloakLogoutUrl) {
-        window.location.href = data.keycloakLogoutUrl;
-        return;
-      }
-    } catch (error) {
-      console.warn('Backend logout failed:', error);
+  try {
+    const response = await fetch(`${authBaseUrl}/logout/${clientKey}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Authorization': token ? `Bearer ${token}` : '',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        refreshToken: refreshToken // Send in body
+      })
+    });
+
+    const data = await response.json();
+    console.log('✅ Logout response:', data);
+
+    // Clear stored tokens
+    sessionStorage.removeItem('refreshToken');
+    clearToken();
+
+    // Delay before redirect
+    await new Promise(resolve => setTimeout(resolve, 5000)); // ⏳ wait 5 sec
+
+    if (data.success && data.keycloakLogoutUrl) {
+      window.location.href = data.keycloakLogoutUrl;
+      return;
     }
+
+  } catch (error) {
+    console.warn('⚠️ Logout failed:', error);
+    sessionStorage.removeItem('refreshToken');
+    clearToken();
   }
 
+  // Delay before fallback redirect
+  await new Promise(resolve => setTimeout(resolve, 5000)); // ⏳ wait 5 sec
   window.location.href = '/login';
 }
+
+
 
 // ✅ Client logout
 function clientLogout(clientKey, accountUiUrl) {
@@ -135,28 +153,21 @@ function clientLogout(clientKey, accountUiUrl) {
 export function handleCallback() {
   const params = new URLSearchParams(window.location.search);
   const accessToken = params.get('access_token');
+  const refreshToken = params.get('refresh_token'); // CAPTURE THIS
   const error = params.get('error');
 
-  console.log('🔄 Handling authentication callback:', {
-    mode: isRouterMode() ? 'ROUTER' : 'CLIENT',
+  console.log('🔄 Enhanced callback handling:', {
     hasAccessToken: !!accessToken,
-    error,
-    alreadyProcessed: callbackProcessed
+    hasRefreshToken: !!refreshToken,
+    error
   });
 
-  // ✅ If already processed and we have a token, return it
   if (callbackProcessed) {
     const existingToken = getToken();
-    if (existingToken) {
-      console.log('🔄 Callback already processed, returning existing token');
-      return existingToken;
-    }
+    if (existingToken) return existingToken;
   }
 
-  // ✅ Mark as processed first
   callbackProcessed = true;
-
-  // Clean up session storage (only once)
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
 
@@ -165,14 +176,28 @@ export function handleCallback() {
   }
 
   if (accessToken) {
-    // ✅ This will trigger token listeners
     setToken(accessToken);
-    console.log('✅ Token set successfully, listeners notified');
+    
+    // STORE REFRESH TOKEN in sessionStorage
+    if (refreshToken) {
+      sessionStorage.setItem('refreshToken', refreshToken);
+      console.log('✅ Refresh token stored in sessionStorage');
+    }
+    
+    // Clean URL parameters
+    const url = new URL(window.location);
+    url.searchParams.delete('access_token');
+    url.searchParams.delete('refresh_token'); // Remove this too
+    url.searchParams.delete('state');
+    window.history.replaceState({}, '', url);
+    
     return accessToken;
   }
 
   throw new Error('No access token found in callback URL');
 }
+
+
 
 // ✅ Reset callback state
 export function resetCallbackState() {
@@ -209,6 +234,44 @@ export async function refreshToken() {
     throw err;
   }
 }
+
+
+export async function validateCurrentSession() {
+  try {
+    const { authBaseUrl } = getConfig();
+    const token = getToken();
+    
+    if (!token || !authBaseUrl) {
+      return false;
+    }
+
+    const response = await fetch(`${authBaseUrl}/account/validate-session`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include'
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        return false;
+      }
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.valid === true;
+  } catch (error) {
+    console.warn('Session validation failed:', error.message);
+    if (error.message.includes('401')) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 
 
 

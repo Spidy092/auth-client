@@ -35,4 +35,17 @@ api.interceptors.response.use(
   }
 );
 
+
+api.validateSession = async () => {
+  try {
+    const response = await api.get('/account/validate-session');
+    return response.data.valid;
+  } catch (error) {
+    if (error.response?.status === 401) {
+      return false;
+    }
+    throw error;
+  }
+};
+
 export default api;

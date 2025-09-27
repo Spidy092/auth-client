@@ -1,6 +1,6 @@
 // auth-client/index.js
 import { setConfig, getConfig, isRouterMode } from './config';
-import { login, logout, handleCallback, refreshToken, resetCallbackState } from './core';
+import { login, logout, handleCallback, refreshToken, resetCallbackState, validateCurrentSession } from './core';
 import { getToken, setToken, clearToken, addTokenListener, removeTokenListener, getListenerCount } from './token';
 import api from './api';
 import { decodeToken, isTokenExpired, isAuthenticated } from './utils/jwt';
@@ -17,6 +17,7 @@ export const auth = {
   handleCallback,
   refreshToken,
   resetCallbackState,
+  validateCurrentSession,
 
   // 🔑 Token management
   getToken,
@@ -54,3 +55,4 @@ export const auth = {
 
 export { AuthProvider } from './react/AuthProvider';
 export { useAuth } from './react/useAuth';
+export { useSessionMonitor } from './react/useSessionMonitor';
