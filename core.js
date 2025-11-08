@@ -1,5 +1,12 @@
 // auth-client/core.js
-import { setToken, clearToken, getToken } from './token';
+import {
+  setToken,
+  clearToken,
+  getToken,
+  setRefreshToken,
+  getRefreshToken,
+  clearRefreshToken,
+} from './token';
 import { getConfig, isRouterMode } from './config';
 
 // ✅ Track callback state with listeners
@@ -86,7 +93,9 @@ export function logout() {
 
   // Clear local storage immediately (this will trigger listeners)
   clearToken();
-  sessionStorage.clear();
+  clearRefreshToken();
+  sessionStorage.removeItem('originalApp');
+  sessionStorage.removeItem('returnUrl');
 
   if (isRouterMode()) {
     return routerLogout(clientKey, authBaseUrl, accountUiUrl, token);
@@ -99,8 +108,8 @@ export function logout() {
 async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
   console.log('🏭 Enhanced Router Logout with sessionStorage');
 
-  const refreshToken = sessionStorage.getItem('refreshToken');
-  console.log('Refresh token from storage:', refreshToken ? 'FOUND' : 'MISSING');
+  const refreshToken = getRefreshToken();
+  console.log('Refresh token available:', refreshToken ? 'FOUND' : 'MISSING');
 
   try {
     const response = await fetch(`${authBaseUrl}/logout/${clientKey}`, {
@@ -119,7 +128,7 @@ async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
     console.log('✅ Logout response:', data);
 
     // Clear stored tokens
-    sessionStorage.removeItem('refreshToken');
+    clearRefreshToken();
     clearToken();
 
     // Delay before redirect
@@ -132,7 +141,7 @@ async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
 
   } catch (error) {
     console.warn('⚠️ Logout failed:', error);
-    sessionStorage.removeItem('refreshToken');
+    clearRefreshToken();
     clearToken();
   }
 
@@ -177,11 +186,11 @@ export function handleCallback() {
 
   if (accessToken) {
     setToken(accessToken);
-    
-    // STORE REFRESH TOKEN in sessionStorage
+
+    // Store refresh token for future refresh calls
     if (refreshToken) {
-      sessionStorage.setItem('refreshToken', refreshToken);
-      console.log('✅ Refresh token stored in sessionStorage');
+      setRefreshToken(refreshToken);
+      console.log('✅ Refresh token persisted');
     }
     
     // Clean URL parameters
@@ -231,6 +240,7 @@ export async function refreshToken() {
   } catch (err) {
     // ✅ This will trigger token listeners
     clearToken();
+    clearRefreshToken();
     throw err;
   }
 }

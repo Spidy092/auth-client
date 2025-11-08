@@ -1,28 +1,73 @@
 // auth-client/token.js
-let memoryToken = null;
-const listeners = new Set(); // ✅ Add listeners
+import { jwtDecode } from 'jwt-decode';
 
-export function setToken(token) {
-  const previousToken = memoryToken;
-  memoryToken = token;
-  
+let accessToken = null;
+const listeners = new Set();
+
+const REFRESH_COOKIE = 'account_refresh_token';
+const COOKIE_MAX_AGE = 7 * 24 * 60 * 60; // 7 days in seconds
+
+function secureAttribute() {
+  try {
+    return typeof window !== 'undefined' && window.location?.protocol === 'https:'
+      ? '; Secure'
+      : '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function writeAccessToken(token) {
+  if (!token) {
+    try {
+      localStorage.removeItem('authToken');
+    } catch (err) {
+      console.warn('Could not clear token from localStorage:', err);
+    }
+    return;
+  }
+
   try {
     localStorage.setItem('authToken', token);
   } catch (err) {
-    console.warn('Could not write token to localStorage:', err);
+    console.warn('Could not persist token to localStorage:', err);
   }
+}
 
-  // ✅ Notify listeners when token changes
-  if (previousToken !== token) {
-    console.log('🔔 Token changed, notifying listeners:', { 
-      listenerCount: listeners.size,
-      hadToken: !!previousToken,
-      hasToken: !!token 
-    });
-    
-    listeners.forEach(listener => {
+function readAccessToken() {
+  try {
+    return localStorage.getItem('authToken');
+  } catch (err) {
+    console.warn('Could not read token from localStorage:', err);
+    return null;
+  }
+}
+
+function decode(token) {
+  try {
+    return jwtDecode(token);
+  } catch (err) {
+    return null;
+  }
+}
+
+function isExpired(token, bufferSeconds = 60) {
+  if (!token) return true;
+  const decoded = decode(token);
+  if (!decoded?.exp) return true;
+  const now = Date.now() / 1000;
+  return decoded.exp < now + bufferSeconds;
+}
+
+export function setToken(token) {
+  const previousToken = accessToken;
+  accessToken = token || null;
+  writeAccessToken(accessToken);
+
+  if (previousToken !== accessToken) {
+    listeners.forEach((listener) => {
       try {
-        listener(token, previousToken);
+        listener(accessToken, previousToken);
       } catch (err) {
         console.warn('Token listener error:', err);
       }
@@ -31,119 +76,109 @@ export function setToken(token) {
 }
 
 export function getToken() {
-  if (memoryToken) return memoryToken;
+  if (accessToken) return accessToken;
+  accessToken = readAccessToken();
+  return accessToken;
+}
+
+export function clearToken() {
+  if (!accessToken) {
+    writeAccessToken(null);
+    clearRefreshToken();
+    return;
+  }
+
+  const previousToken = accessToken;
+  accessToken = null;
+  writeAccessToken(null);
+  clearRefreshToken();
+
+  listeners.forEach((listener) => {
+    try {
+      listener(null, previousToken);
+    } catch (err) {
+      console.warn('Token listener error:', err);
+    }
+  });
+}
+
+export function setRefreshToken(token) {
+  if (!token) {
+    clearRefreshToken();
+    return;
+  }
+
+  const expires = new Date(Date.now() + COOKIE_MAX_AGE * 1000);
   try {
-    const stored = localStorage.getItem('authToken');
-    memoryToken = stored;
-    return stored;
+    document.cookie = `${REFRESH_COOKIE}=${encodeURIComponent(token)}; Path=/; SameSite=Strict${secureAttribute()}; Expires=${expires.toUTCString()}`;
   } catch (err) {
-    console.warn('Could not read token from localStorage:', err);
+    console.warn('Could not persist refresh token cookie:', err);
+  }
+
+  try {
+    sessionStorage.setItem(REFRESH_COOKIE, token);
+  } catch (err) {
+    console.warn('Could not persist refresh token to sessionStorage:', err);
+  }
+}
+
+export function getRefreshToken() {
+  // Prefer cookie to align with server expectations
+  let cookieMatch = null;
+
+  try {
+    cookieMatch = document.cookie
+      ?.split('; ')
+      ?.find((row) => row.startsWith(`${REFRESH_COOKIE}=`));
+  } catch (err) {
+    cookieMatch = null;
+  }
+
+  if (cookieMatch) {
+    return decodeURIComponent(cookieMatch.split('=')[1]);
+  }
+
+  try {
+    return sessionStorage.getItem(REFRESH_COOKIE);
+  } catch (err) {
+    console.warn('Could not read refresh token from sessionStorage:', err);
     return null;
   }
 }
 
-export function clearToken() {
-  const previousToken = memoryToken;
-  memoryToken = null;
-  
+export function clearRefreshToken() {
   try {
-    localStorage.removeItem('authToken');
+    document.cookie = `${REFRESH_COOKIE}=; Path=/; SameSite=Strict${secureAttribute()}; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
   } catch (err) {
-    console.warn('Could not clear token from localStorage:', err);
+    console.warn('Could not clear refresh token cookie:', err);
   }
-
-  // ✅ Notify listeners when token is cleared
-  if (previousToken) {
-    console.log('🔔 Token cleared, notifying listeners:', { 
-      listenerCount: listeners.size 
-    });
-    
-    listeners.forEach(listener => {
-      try {
-        listener(null, previousToken);
-      } catch (err) {
-        console.warn('Token listener error:', err);
-      }
-    });
+  try {
+    sessionStorage.removeItem(REFRESH_COOKIE);
+  } catch (err) {
+    console.warn('Could not clear refresh token from sessionStorage:', err);
   }
 }
 
-// ✅ Add listener management
 export function addTokenListener(listener) {
   if (typeof listener !== 'function') {
     throw new Error('Token listener must be a function');
   }
-  
   listeners.add(listener);
-  console.log('📎 Token listener added, total listeners:', listeners.size);
-  
-  // Return cleanup function
   return () => {
-    const removed = listeners.delete(listener);
-    if (removed) {
-      console.log('📎 Token listener removed, remaining listeners:', listeners.size);
-    }
-    return removed;
+    listeners.delete(listener);
   };
 }
 
 export function removeTokenListener(listener) {
-  const removed = listeners.delete(listener);
-  if (removed) {
-    console.log('📎 Token listener removed, remaining listeners:', listeners.size);
-  }
-  return removed;
-
-  
+  listeners.delete(listener);
 }
 
 export function getListenerCount() {
-  return listeners.size;  
+  return listeners.size;
 }
 
-
-
-// ✅ Debug function to see current listeners
-// ✅ Decode JWT payload safely
-// export function decodeToken(token) {
-//   if (!token) return null;
-
-//   try {
-//     const base64Url = token.split('.')[1]; // JWT payload is 2nd part
-//     if (!base64Url) return null;
-
-//     const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-//     const jsonPayload = decodeURIComponent(
-//       atob(base64)
-//         .split('')
-//         .map((c) => `%${('00' + c.charCodeAt(0).toString(16)).slice(-2)}`)
-//         .join('')
-//     );
-
-//     return JSON.parse(jsonPayload);
-//   } catch (err) {
-//     console.warn('Could not decode token:', err);
-//     return null;
-//   }
-// }
-
-// // ✅ Check if JWT is expired (with optional buffer)
-// export function isTokenExpired(token, bufferSeconds = 0) {
-//   if (!token) return true;
-
-//   const decoded = decodeToken(token);
-//   if (!decoded || !decoded.exp) return true; // no exp claim → treat as expired
-
-//   const expiryTime = decoded.exp * 1000; // exp is in seconds → convert to ms
-//   const currentTime = Date.now();
-
-//   // Add buffer (e.g., 60s) to expire slightly earlier
-//   return currentTime >= expiryTime - bufferSeconds * 1000;
-// }
-
-// ✅ Check if user is authenticated
 export function isAuthenticated() {
   const token = getToken();
-  return !!token && !isTokenExpired(token);
+  return !!token && !isExpired(token, 15);
 }
 
