@@ -1,4 +1,4 @@
-// auth-client/token.js - CORRECTED VERSION
+// auth-client/token.js - MINIMAL WORKING VERSION
 
 import { jwtDecode } from 'jwt-decode';
 
@@ -6,7 +6,7 @@ let accessToken = null;
 const listeners = new Set();
 
 const REFRESH_COOKIE = 'account_refresh_token';
-const COOKIE_MAX_AGE = 7 * 24 * 60 * 60; // 7 days in seconds
+const COOKIE_MAX_AGE = 7 * 24 * 60 * 60;
 
 function secureAttribute() {
   try {
@@ -18,7 +18,7 @@ function secureAttribute() {
   }
 }
 
-// ========== ACCESS TOKEN (localStorage - keeps working) ==========
+// ========== ACCESS TOKEN ==========
 function writeAccessToken(token) {
   if (!token) {
     try {
@@ -45,8 +45,7 @@ function readAccessToken() {
   }
 }
 
-// ========== REFRESH TOKEN (Cookie + sessionStorage - REVERTED) ==========
-
+// ========== REFRESH TOKEN (KEEP SIMPLE) ==========
 export function setRefreshToken(token) {
   if (!token) {
     clearRefreshToken();
@@ -55,70 +54,38 @@ export function setRefreshToken(token) {
 
   const expires = new Date(Date.now() + COOKIE_MAX_AGE * 1000);
   
-  // ✅ REVERT: Use SameSite=Lax (NOT Strict) for SSO to work
   try {
     document.cookie = `${REFRESH_COOKIE}=${encodeURIComponent(token)}; Path=/; SameSite=Lax${secureAttribute()}; Expires=${expires.toUTCString()}`;
-    console.log('✅ Refresh token cookie set (SameSite=Lax for SSO)');
   } catch (err) {
-    console.warn('Could not persist refresh token cookie:', err);
-  }
-
-  // ✅ REVERT: Keep sessionStorage (NOT localStorage) as fallback
-  try {
-    sessionStorage.setItem(REFRESH_COOKIE, token);
-    console.log('✅ Refresh token sessionStorage backup set');
-  } catch (err) {
-    console.warn('Could not persist refresh token to sessionStorage:', err);
+    console.warn('Could not set refresh token:', err);
   }
 }
 
 export function getRefreshToken() {
-  // Prefer cookie to align with server expectations
-  let cookieMatch = null;
   try {
-    cookieMatch = document.cookie
+    const match = document.cookie
       ?.split('; ')
       ?.find((row) => row.startsWith(`${REFRESH_COOKIE}=`));
-  } catch (err) {
-    cookieMatch = null;
-  }
-
-  if (cookieMatch) {
-    console.log('✅ Retrieved refresh token from cookie');
-    return decodeURIComponent(cookieMatch.split('=')[1]);
-  }
-
-  // ✅ REVERT: Fallback to sessionStorage (NOT localStorage)
-  try {
-    const token = sessionStorage.getItem(REFRESH_COOKIE);
-    if (token) {
-      console.log('✅ Retrieved refresh token from sessionStorage (fallback)');
+    
+    if (match) {
+      return decodeURIComponent(match.split('=')[1]);
     }
-    return token;
   } catch (err) {
-    console.warn('Could not read refresh token from sessionStorage:', err);
-    return null;
+    console.warn('Could not read refresh token:', err);
   }
+  
+  return null;
 }
 
 export function clearRefreshToken() {
-  // ✅ REVERT: Clear with SameSite=Lax
   try {
     document.cookie = `${REFRESH_COOKIE}=; Path=/; SameSite=Lax${secureAttribute()}; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
   } catch (err) {
-    console.warn('Could not clear refresh token cookie:', err);
-  }
-
-  // ✅ REVERT: Clear sessionStorage (NOT localStorage)
-  try {
-    sessionStorage.removeItem(REFRESH_COOKIE);
-  } catch (err) {
-    console.warn('Could not clear refresh token from sessionStorage:', err);
+    console.warn('Could not clear refresh token:', err);
   }
 }
 
-// ========== ACCESS TOKEN FUNCTIONS (unchanged) ==========
-
+// ========== ACCESS TOKEN FUNCTIONS ==========
 function decode(token) {
   try {
     return jwtDecode(token);
@@ -200,6 +167,7 @@ export function isAuthenticated() {
   const token = getToken();
   return !!token && !isExpired(token, 15);
 }
+
 
 
 

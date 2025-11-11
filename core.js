@@ -1,4 +1,5 @@
-// auth-client/core.js
+// auth-client/core.js - MINIMAL WORKING VERSION
+
 import {
   setToken,
   clearToken,
@@ -9,11 +10,9 @@ import {
 } from './token';
 import { getConfig, isRouterMode } from './config';
 
-// ✅ Track callback state with listeners
 let callbackProcessed = false;
 
-export async function login(clientKeyArg, redirectUriArg) {
-  // ✅ Reset callback state when starting new login
+export function login(clientKeyArg, redirectUriArg) {
   resetCallbackState();
   
   const {
@@ -36,138 +35,40 @@ export async function login(clientKeyArg, redirectUriArg) {
     throw new Error('Missing clientKey or redirectUri');
   }
 
-  // Store app info
   sessionStorage.setItem('originalApp', clientKey);
   sessionStorage.setItem('returnUrl', redirectUri);
 
-    try {
-    const hasValidSession = await checkExistingTokens();
-    if (hasValidSession) {
-      console.log('✅ Valid session found, skipping login redirect');
-      return getToken();
-    }
-  } catch (err) {
-    console.log('⚠️ No valid session, proceeding with login flow');
-  }
-
-  // ✅ Smart Router Logic
   if (isRouterMode()) {
-    // Router mode: Direct backend authentication
     return routerLogin(clientKey, redirectUri);
   } else {
-    // Client mode: Redirect to centralized login
     return clientLogin(clientKey, redirectUri);
   }
 }
 
-// ✅ Router mode: Direct backend call
 function routerLogin(clientKey, redirectUri) {
   const { authBaseUrl } = getConfig();
   const backendLoginUrl = `${authBaseUrl}/login/${clientKey}?redirect_uri=${encodeURIComponent(redirectUri)}`;
   
-  console.log('🏭 Router Login: Direct backend authentication', {
-    clientKey,
-    redirectUri,
-    backendUrl: backendLoginUrl
-  });
-
+  console.log('🏭 Router Login:', backendLoginUrl);
   window.location.href = backendLoginUrl;
 }
 
-
-async function checkExistingTokens() {
-  const token = getToken();
-  const refreshTokenValue = getRefreshToken();
-  
-  console.log('🔍 Checking existing tokens:', {
-    hasAccessToken: !!token,
-    hasRefreshToken: !!refreshTokenValue
-  });
-  
-  // No tokens at all
-  if (!token && !refreshTokenValue) {
-    console.log('❌ No tokens found');
-    return false;
-  }
-  
-  // Have valid access token
-  if (token && !isTokenExpiredLocal(token)) {
-    console.log('✅ Valid access token exists');
-    return true;
-  }
-  
-  // Have refresh token, try to get new access token
-  if (refreshTokenValue) {
-    try {
-      console.log('🔄 Access token expired, attempting refresh...');
-      const newToken = await refreshToken();
-      console.log('✅ Token refreshed successfully');
-      return !!newToken;
-    } catch (err) {
-      console.warn('❌ Token refresh failed:', err);
-      return false;
-    }
-  }
-  
-  return false;
-}
-
-// ✅ NEW HELPER: Check if token is expired
-function isTokenExpiredLocal(token, bufferSeconds = 60) {
-  if (!token) return true;
-  
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return true;
-    
-    const payload = JSON.parse(atob(parts[1]));
-    
-    if (!payload.exp) return true;
-    
-    const now = Date.now() / 1000;
-    const isExpired = payload.exp < (now + bufferSeconds);
-    
-    console.log('🕐 Token expiry check:', {
-      expiresAt: new Date(payload.exp * 1000).toLocaleString(),
-      now: new Date(now * 1000).toLocaleString(),
-      isExpired
-    });
-    
-    return isExpired;
-  } catch (err) {
-    console.error('❌ Failed to decode token:', err);
-    return true;
-  }
-}
-
-// ✅ Client mode: Centralized login
 function clientLogin(clientKey, redirectUri) {
   const { accountUiUrl } = getConfig();
   const centralizedLoginUrl = `${accountUiUrl}/login?client=${clientKey}&redirect_uri=${encodeURIComponent(redirectUri)}`;
   
-  console.log('🔄 Client Login: Redirecting to centralized login', {
-    clientKey,
-    redirectUri,
-    centralizedUrl: centralizedLoginUrl
-  });
-
+  console.log('🔄 Client Login:', centralizedLoginUrl);
   window.location.href = centralizedLoginUrl;
 }
 
 export function logout() {
-  // ✅ Reset callback state on logout
   resetCallbackState();
   
   const { clientKey, authBaseUrl, accountUiUrl } = getConfig();
   const token = getToken();
 
-  console.log('🚪 Smart Logout initiated:', {
-    mode: isRouterMode() ? 'ROUTER' : 'CLIENT',
-    clientKey,
-    hasToken: !!token
-  });
+  console.log('🚪 Smart Logout initiated');
 
-  // Clear local storage immediately (this will trigger listeners)
   clearToken();
   clearRefreshToken();
   sessionStorage.removeItem('originalApp');
@@ -180,12 +81,10 @@ export function logout() {
   }
 }
 
-// ✅ Router logout
 async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
-  console.log('🏭 Enhanced Router Logout with sessionStorage');
+  console.log('🏭 Router Logout');
 
   const refreshToken = getRefreshToken();
-  console.log('Refresh token available:', refreshToken ? 'FOUND' : 'MISSING');
 
   try {
     const response = await fetch(`${authBaseUrl}/logout/${clientKey}`, {
@@ -196,19 +95,17 @@ async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        refreshToken: refreshToken // Send in body
+        refreshToken: refreshToken
       })
     });
 
     const data = await response.json();
     console.log('✅ Logout response:', data);
 
-    // Clear stored tokens
     clearRefreshToken();
     clearToken();
 
-    // Delay before redirect
-    await new Promise(resolve => setTimeout(resolve, 5000)); // ⏳ wait 5 sec
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
     if (data.success && data.keycloakLogoutUrl) {
       window.location.href = data.keycloakLogoutUrl;
@@ -221,16 +118,12 @@ async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
     clearToken();
   }
 
-  // Delay before fallback redirect
-  await new Promise(resolve => setTimeout(resolve, 5000)); // ⏳ wait 5 sec
+  await new Promise(resolve => setTimeout(resolve, 5000));
   window.location.href = '/login';
 }
 
-
-
-// ✅ Client logout
 function clientLogout(clientKey, accountUiUrl) {
-  console.log('🔄 Client Logout: Redirecting to centralized login');
+  console.log('🔄 Client Logout');
   const logoutUrl = `${accountUiUrl}/login?client=${clientKey}&logout=true`;
   window.location.href = logoutUrl;
 }
@@ -238,10 +131,10 @@ function clientLogout(clientKey, accountUiUrl) {
 export function handleCallback() {
   const params = new URLSearchParams(window.location.search);
   const accessToken = params.get('access_token');
-  const refreshToken = params.get('refresh_token'); // CAPTURE THIS
+  const refreshToken = params.get('refresh_token');
   const error = params.get('error');
 
-  console.log('🔄 Enhanced callback handling:', {
+  console.log('🔄 Callback handling:', {
     hasAccessToken: !!accessToken,
     hasRefreshToken: !!refreshToken,
     error
@@ -263,16 +156,14 @@ export function handleCallback() {
   if (accessToken) {
     setToken(accessToken);
 
-    // Store refresh token for future refresh calls
     if (refreshToken) {
       setRefreshToken(refreshToken);
       console.log('✅ Refresh token persisted');
     }
     
-    // Clean URL parameters
     const url = new URL(window.location);
     url.searchParams.delete('access_token');
-    url.searchParams.delete('refresh_token'); // Remove this too
+    url.searchParams.delete('refresh_token');
     url.searchParams.delete('state');
     window.history.replaceState({}, '', url);
     
@@ -282,27 +173,18 @@ export function handleCallback() {
   throw new Error('No access token found in callback URL');
 }
 
-
-
-// ✅ Reset callback state
 export function resetCallbackState() {
   callbackProcessed = false;
-  console.log('🔄 Callback state reset');
 }
 
-// auth-client/core.js
 export async function refreshToken() {
   const { clientKey, authBaseUrl } = getConfig();
-  const refreshTokenValue = getRefreshToken(); // ✅ Now checks both cookie & localStorage
+  const refreshTokenValue = getRefreshToken();
 
-  console.log('🔄 Refreshing token:', {
-    clientKey,
-    mode: isRouterMode() ? 'ROUTER' : 'CLIENT',
-    hasRefreshToken: !!refreshTokenValue
-  });
+  console.log('🔄 Refreshing token');
 
   if (!refreshTokenValue) {
-    console.warn('⚠️ No refresh token available for refresh');
+    console.warn('⚠️ No refresh token available');
     clearToken();
     throw new Error('No refresh token available');
   }
@@ -310,13 +192,13 @@ export async function refreshToken() {
   try {
     const response = await fetch(`${authBaseUrl}/refresh/${clientKey}`, {
       method: 'POST',
-      credentials: 'include', // ✅ Sends cookie if available
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
-        'X-Refresh-Token': refreshTokenValue // ✅ Also send in header as fallback
+        'X-Refresh-Token': refreshTokenValue
       },
       body: JSON.stringify({
-        refreshToken: refreshTokenValue // ✅ Also send in body
+        refreshToken: refreshTokenValue
       })
     });
 
@@ -326,26 +208,21 @@ export async function refreshToken() {
 
     const { access_token, refresh_token: new_refresh_token } = await response.json();
 
-    // ✅ Update access token (triggers listeners)
     setToken(access_token);
-
-    // ✅ Update refresh token in BOTH storages if backend returned new one
+    
     if (new_refresh_token) {
       setRefreshToken(new_refresh_token);
     }
 
-    console.log('✅ Token refresh successful, listeners notified');
+    console.log('✅ Token refresh successful');
     return access_token;
   } catch (err) {
     console.error('❌ Token refresh failed:', err);
-    // ✅ Clear everything on refresh failure
     clearToken();
     clearRefreshToken();
     throw err;
   }
 }
-
-
 
 export async function validateCurrentSession() {
   try {
@@ -382,6 +259,7 @@ export async function validateCurrentSession() {
     throw error;
   }
 }
+
 
 
 
