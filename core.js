@@ -40,6 +40,16 @@ export function login(clientKeyArg, redirectUriArg) {
   sessionStorage.setItem('originalApp', clientKey);
   sessionStorage.setItem('returnUrl', redirectUri);
 
+    try {
+    const hasValidSession = await checkExistingTokens();
+    if (hasValidSession) {
+      console.log('✅ Valid session found, skipping login redirect');
+      return getToken();
+    }
+  } catch (err) {
+    console.log('⚠️ No valid session, proceeding with login flow');
+  }
+
   // ✅ Smart Router Logic
   if (isRouterMode()) {
     // Router mode: Direct backend authentication
@@ -62,6 +72,72 @@ function routerLogin(clientKey, redirectUri) {
   });
 
   window.location.href = backendLoginUrl;
+}
+
+
+async function checkExistingTokens() {
+  const token = getToken();
+  const refreshTokenValue = getRefreshToken();
+  
+  console.log('🔍 Checking existing tokens:', {
+    hasAccessToken: !!token,
+    hasRefreshToken: !!refreshTokenValue
+  });
+  
+  // No tokens at all
+  if (!token && !refreshTokenValue) {
+    console.log('❌ No tokens found');
+    return false;
+  }
+  
+  // Have valid access token
+  if (token && !isTokenExpiredLocal(token)) {
+    console.log('✅ Valid access token exists');
+    return true;
+  }
+  
+  // Have refresh token, try to get new access token
+  if (refreshTokenValue) {
+    try {
+      console.log('🔄 Access token expired, attempting refresh...');
+      const newToken = await refreshToken();
+      console.log('✅ Token refreshed successfully');
+      return !!newToken;
+    } catch (err) {
+      console.warn('❌ Token refresh failed:', err);
+      return false;
+    }
+  }
+  
+  return false;
+}
+
+// ✅ NEW HELPER: Check if token is expired
+function isTokenExpiredLocal(token, bufferSeconds = 60) {
+  if (!token) return true;
+  
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return true;
+    
+    const payload = JSON.parse(atob(parts[1]));
+    
+    if (!payload.exp) return true;
+    
+    const now = Date.now() / 1000;
+    const isExpired = payload.exp < (now + bufferSeconds);
+    
+    console.log('🕐 Token expiry check:', {
+      expiresAt: new Date(payload.exp * 1000).toLocaleString(),
+      now: new Date(now * 1000).toLocaleString(),
+      isExpired
+    });
+    
+    return isExpired;
+  } catch (err) {
+    console.error('❌ Failed to decode token:', err);
+    return true;
+  }
 }
 
 // ✅ Client mode: Centralized login
