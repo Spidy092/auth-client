@@ -214,36 +214,61 @@ export function resetCallbackState() {
   console.log('🔄 Callback state reset');
 }
 
+// auth-client/core.js
 export async function refreshToken() {
   const { clientKey, authBaseUrl } = getConfig();
-  
-  console.log('🔄 Refreshing token:', { 
-    clientKey, 
-    mode: isRouterMode() ? 'ROUTER' : 'CLIENT' 
+  const refreshTokenValue = getRefreshToken(); // ✅ Now checks both cookie & localStorage
+
+  console.log('🔄 Refreshing token:', {
+    clientKey,
+    mode: isRouterMode() ? 'ROUTER' : 'CLIENT',
+    hasRefreshToken: !!refreshTokenValue
   });
-  
+
+  if (!refreshTokenValue) {
+    console.warn('⚠️ No refresh token available for refresh');
+    clearToken();
+    throw new Error('No refresh token available');
+  }
+
   try {
     const response = await fetch(`${authBaseUrl}/refresh/${clientKey}`, {
       method: 'POST',
-      credentials: 'include',
+      credentials: 'include', // ✅ Sends cookie if available
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Refresh-Token': refreshTokenValue // ✅ Also send in header as fallback
+      },
+      body: JSON.stringify({
+        refreshToken: refreshTokenValue // ✅ Also send in body
+      })
     });
 
     if (!response.ok) {
       throw new Error('Refresh failed');
     }
 
-    const { access_token } = await response.json();
-    // ✅ This will trigger token listeners
+    const { access_token, refresh_token: new_refresh_token } = await response.json();
+
+    // ✅ Update access token (triggers listeners)
     setToken(access_token);
+
+    // ✅ Update refresh token in BOTH storages if backend returned new one
+    if (new_refresh_token) {
+      setRefreshToken(new_refresh_token);
+    }
+
     console.log('✅ Token refresh successful, listeners notified');
     return access_token;
   } catch (err) {
-    // ✅ This will trigger token listeners
+    console.error('❌ Token refresh failed:', err);
+    // ✅ Clear everything on refresh failure
     clearToken();
     clearRefreshToken();
     throw err;
   }
 }
+
 
 
 export async function validateCurrentSession() {
