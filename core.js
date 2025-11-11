@@ -12,7 +12,7 @@ import { getConfig, isRouterMode } from './config';
 // ✅ Track callback state with listeners
 let callbackProcessed = false;
 
-export function login(clientKeyArg, redirectUriArg) {
+export async function login(clientKeyArg, redirectUriArg) {
   // ✅ Reset callback state when starting new login
   resetCallbackState();
   
