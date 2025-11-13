@@ -24,7 +24,7 @@ export function AuthProvider({ children }) {
       return;
     }
 
-    fetch(`${authBaseUrl}/me`, {
+    fetch(`${authBaseUrl}/account/profile`, {
       headers: { Authorization: `Bearer ${token}` },
       credentials: 'include',
     })

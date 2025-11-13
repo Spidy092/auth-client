@@ -103,47 +103,42 @@ export function clearToken() {
 }
 
 export function setRefreshToken(token) {
+  // ✅ SECURITY: Refresh tokens should ONLY be in httpOnly cookies set by server
+  // This function should NOT be used - refresh tokens must come from server cookies
+  // Keeping for backwards compatibility but logging warning
+  
   if (!token) {
     clearRefreshToken();
     return;
   }
 
-  const expires = new Date(Date.now() + COOKIE_MAX_AGE * 1000);
+  console.warn('⚠️ SECURITY WARNING: setRefreshToken() called - refresh tokens should only be in httpOnly cookies!');
+  console.warn('⚠️ Refresh tokens set client-side are insecure and should be removed');
+  
+  // ❌ DO NOT store refresh token in client-side storage
+  // The server sets it in httpOnly cookie, which is the only secure way
+  
+  // Only clear any existing client-side storage
   try {
-    document.cookie = `${REFRESH_COOKIE}=${encodeURIComponent(token)}; Path=/; SameSite=Strict${secureAttribute()}; Expires=${expires.toUTCString()}`;
+    sessionStorage.removeItem(REFRESH_COOKIE);
   } catch (err) {
-    console.warn('Could not persist refresh token cookie:', err);
-  }
-
-  try {
-    sessionStorage.setItem(REFRESH_COOKIE, token);
-  } catch (err) {
-    console.warn('Could not persist refresh token to sessionStorage:', err);
+    // Ignore
   }
 }
 
 export function getRefreshToken() {
-  // Prefer cookie to align with server expectations
-  let cookieMatch = null;
-
-  try {
-    cookieMatch = document.cookie
-      ?.split('; ')
-      ?.find((row) => row.startsWith(`${REFRESH_COOKIE}=`));
-  } catch (err) {
-    cookieMatch = null;
-  }
-
-  if (cookieMatch) {
-    return decodeURIComponent(cookieMatch.split('=')[1]);
-  }
-
-  try {
-    return sessionStorage.getItem(REFRESH_COOKIE);
-  } catch (err) {
-    console.warn('Could not read refresh token from sessionStorage:', err);
-    return null;
-  }
+  // ✅ Refresh tokens are stored in httpOnly cookies by the server
+  // We cannot read httpOnly cookies from JavaScript - they're only sent with requests
+  // This function is kept for backwards compatibility but returns null
+  // The refresh endpoint will automatically use the httpOnly cookie via credentials: 'include'
+  
+  // ❌ DO NOT try to read refresh token from client-side storage
+  // httpOnly cookies are not accessible via document.cookie
+  
+  console.warn('⚠️ getRefreshToken() called - refresh tokens are in httpOnly cookies and cannot be read from JavaScript');
+  console.warn('⚠️ The refresh endpoint will automatically use the httpOnly cookie via credentials: "include"');
+  
+  return null; // Refresh token is in httpOnly cookie, not accessible to JavaScript
 }
 
 export function clearRefreshToken() {
