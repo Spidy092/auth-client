@@ -1,4 +1,5 @@
-// auth-client/core.js
+// auth-client/core.js - MINIMAL WORKING VERSION
+
 import {
   setToken,
   clearToken,
@@ -9,7 +10,6 @@ import {
 } from './token';
 import { getConfig, isRouterMode } from './config';
 
-// ✅ Track callback state with listeners
 let callbackProcessed = false;
 
 export function login(clientKeyArg, redirectUriArg, options = {}) {
@@ -39,11 +39,9 @@ export function login(clientKeyArg, redirectUriArg, options = {}) {
     throw new Error('Missing clientKey or redirectUri');
   }
 
-  // Store app info
   sessionStorage.setItem('originalApp', clientKey);
   sessionStorage.setItem('returnUrl', redirectUri);
 
-  // ✅ Smart Router Logic
   if (isRouterMode()) {
     // Router mode: Direct backend authentication
     return routerLogin(clientKey, redirectUri, { codeChallenge, codeChallengeMethod, state });
@@ -119,19 +117,13 @@ function clientLogin(clientKey, redirectUri, options = {}) {
 }
 
 export function logout() {
-  // ✅ Reset callback state on logout
   resetCallbackState();
   
   const { clientKey, authBaseUrl, accountUiUrl } = getConfig();
   const token = getToken();
 
-  console.log('🚪 Smart Logout initiated:', {
-    mode: isRouterMode() ? 'ROUTER' : 'CLIENT',
-    clientKey,
-    hasToken: !!token
-  });
+  console.log('🚪 Smart Logout initiated');
 
-  // Clear local storage immediately (this will trigger listeners)
   clearToken();
   clearRefreshToken();
   sessionStorage.removeItem('originalApp');
@@ -144,12 +136,10 @@ export function logout() {
   }
 }
 
-// ✅ Router logout
 async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
-  console.log('🏭 Enhanced Router Logout with sessionStorage');
+  console.log('🏭 Router Logout');
 
   const refreshToken = getRefreshToken();
-  console.log('Refresh token available:', refreshToken ? 'FOUND' : 'MISSING');
 
   try {
     const response = await fetch(`${authBaseUrl}/logout/${clientKey}`, {
@@ -160,19 +150,17 @@ async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        refreshToken: refreshToken // Send in body
+        refreshToken: refreshToken
       })
     });
 
     const data = await response.json();
     console.log('✅ Logout response:', data);
 
-    // Clear stored tokens
     clearRefreshToken();
     clearToken();
 
-    // Delay before redirect
-    await new Promise(resolve => setTimeout(resolve, 5000)); // ⏳ wait 5 sec
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
     if (data.success && data.keycloakLogoutUrl) {
       window.location.href = data.keycloakLogoutUrl;
@@ -185,16 +173,12 @@ async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
     clearToken();
   }
 
-  // Delay before fallback redirect
-  await new Promise(resolve => setTimeout(resolve, 5000)); // ⏳ wait 5 sec
+  await new Promise(resolve => setTimeout(resolve, 5000));
   window.location.href = '/login';
 }
 
-
-
-// ✅ Client logout
 function clientLogout(clientKey, accountUiUrl) {
-  console.log('🔄 Client Logout: Redirecting to centralized login');
+  console.log('🔄 Client Logout');
   const logoutUrl = `${accountUiUrl}/login?client=${clientKey}&logout=true`;
   window.location.href = logoutUrl;
 }
@@ -205,7 +189,7 @@ export function handleCallback() {
   const error = params.get('error');
   const state = params.get('state');
 
-  console.log('🔄 Enhanced callback handling:', {
+  console.log('🔄 Callback handling:', {
     hasAccessToken: !!accessToken,
     error,
     hasState: !!state
@@ -269,9 +253,9 @@ export function handleCallback() {
       // DO NOT store refresh token from URL - it should only be in httpOnly cookie
     }
     
-    // Clean URL parameters
     const url = new URL(window.location);
     url.searchParams.delete('access_token');
+    url.searchParams.delete('refresh_token');
     url.searchParams.delete('refresh_token');
     url.searchParams.delete('state');
     url.searchParams.delete('error');
@@ -285,12 +269,8 @@ export function handleCallback() {
   throw new Error('No access token found in callback URL');
 }
 
-
-
-// ✅ Reset callback state
 export function resetCallbackState() {
   callbackProcessed = false;
-  console.log('🔄 Callback state reset');
 }
 
 // ✅ Add refresh lock to prevent concurrent refresh calls
@@ -350,7 +330,6 @@ export async function refreshToken() {
   return refreshPromise;
 }
 
-
 export async function validateCurrentSession() {
   try {
     const { authBaseUrl } = getConfig();
@@ -386,6 +365,7 @@ export async function validateCurrentSession() {
     throw error;
   }
 }
+
 
 
 
