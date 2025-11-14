@@ -46,44 +46,44 @@ function readAccessToken() {
 }
 
 // ========== REFRESH TOKEN (KEEP SIMPLE) ==========
-export function setRefreshToken(token) {
-  if (!token) {
-    clearRefreshToken();
-    return;
-  }
+// export function setRefreshToken(token) {
+//   if (!token) {
+//     clearRefreshToken();
+//     return;
+//   }
 
-  const expires = new Date(Date.now() + COOKIE_MAX_AGE * 1000);
+//   const expires = new Date(Date.now() + COOKIE_MAX_AGE * 1000);
   
-  try {
-    document.cookie = `${REFRESH_COOKIE}=${encodeURIComponent(token)}; Path=/; SameSite=Lax${secureAttribute()}; Expires=${expires.toUTCString()}`;
-  } catch (err) {
-    console.warn('Could not set refresh token:', err);
-  }
-}
+//   try {
+//     document.cookie = `${REFRESH_COOKIE}=${encodeURIComponent(token)}; Path=/; SameSite=Lax${secureAttribute()}; Expires=${expires.toUTCString()}`;
+//   } catch (err) {
+//     console.warn('Could not set refresh token:', err);
+//   }
+// }
 
-export function getRefreshToken() {
-  try {
-    const match = document.cookie
-      ?.split('; ')
-      ?.find((row) => row.startsWith(`${REFRESH_COOKIE}=`));
+// export function getRefreshToken() {
+//   try {
+//     const match = document.cookie
+//       ?.split('; ')
+//       ?.find((row) => row.startsWith(`${REFRESH_COOKIE}=`));
     
-    if (match) {
-      return decodeURIComponent(match.split('=')[1]);
-    }
-  } catch (err) {
-    console.warn('Could not read refresh token:', err);
-  }
+//     if (match) {
+//       return decodeURIComponent(match.split('=')[1]);
+//     }
+//   } catch (err) {
+//     console.warn('Could not read refresh token:', err);
+//   }
   
-  return null;
-}
+//   return null;
+// }
 
-export function clearRefreshToken() {
-  try {
-    document.cookie = `${REFRESH_COOKIE}=; Path=/; SameSite=Lax${secureAttribute()}; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
-  } catch (err) {
-    console.warn('Could not clear refresh token:', err);
-  }
-}
+// export function clearRefreshToken() {
+//   try {
+//     document.cookie = `${REFRESH_COOKIE}=; Path=/; SameSite=Lax${secureAttribute()}; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+//   } catch (err) {
+//     console.warn('Could not clear refresh token:', err);
+//   }
+// }
 
 // ========== ACCESS TOKEN FUNCTIONS ==========
 function decode(token) {
