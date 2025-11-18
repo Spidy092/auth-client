@@ -12,7 +12,7 @@ import { getConfig, isRouterMode } from './config';
 
 let callbackProcessed = false;
 
-export function login(clientKeyArg, redirectUriArg, options = {}) {
+export function login(clientKeyArg, redirectUriArg) {
   // ✅ Reset callback state when starting new login
   resetCallbackState();
   
@@ -25,14 +25,11 @@ export function login(clientKeyArg, redirectUriArg, options = {}) {
 
   const clientKey = clientKeyArg || defaultClientKey;
   const redirectUri = redirectUriArg || defaultRedirectUri;
-  const { codeChallenge, codeChallengeMethod, state } = options;
 
   console.log('🔄 Smart Login initiated:', {
     mode: isRouterMode() ? 'ROUTER' : 'CLIENT',
     clientKey,
-    redirectUri,
-    hasPKCE: !!codeChallenge,
-    hasState: !!state
+    redirectUri
   });
 
   if (!clientKey || !redirectUri) {
@@ -44,39 +41,27 @@ export function login(clientKeyArg, redirectUriArg, options = {}) {
 
   if (isRouterMode()) {
     // Router mode: Direct backend authentication
-    return routerLogin(clientKey, redirectUri, { codeChallenge, codeChallengeMethod, state });
+    return routerLogin(clientKey, redirectUri);
   } else {
     // Client mode: Redirect to centralized login
-    return clientLogin(clientKey, redirectUri, { codeChallenge, codeChallengeMethod, state });
+    return clientLogin(clientKey, redirectUri);
   }
 }
 
 // ✅ Router mode: Direct backend call
-function routerLogin(clientKey, redirectUri, options = {}) {
+function routerLogin(clientKey, redirectUri) {
   const { authBaseUrl } = getConfig();
-  const { codeChallenge, codeChallengeMethod, state } = options;
   
-  // Build URL with PKCE and state parameters
-  const params = new URLSearchParams({
-    redirect_uri: redirectUri
-  });
-  
-  if (codeChallenge) {
-    params.append('code_challenge', codeChallenge);
-    params.append('code_challenge_method', codeChallengeMethod || 'S256');
+  const params = new URLSearchParams();
+  if (redirectUri) {
+    params.append('redirect_uri', redirectUri);
   }
-  
-  if (state) {
-    params.append('state', state);
-  }
-  
-  const backendLoginUrl = `${authBaseUrl}/login/${clientKey}?${params.toString()}`;
+  const query = params.toString();
+  const backendLoginUrl = `${authBaseUrl}/login/${clientKey}${query ? `?${query}` : ''}`;
   
   console.log('🏭 Router Login: Direct backend authentication', {
     clientKey,
     redirectUri,
-    hasPKCE: !!codeChallenge,
-    hasState: !!state,
     backendUrl: backendLoginUrl
   });
 
@@ -84,32 +69,20 @@ function routerLogin(clientKey, redirectUri, options = {}) {
 }
 
 // ✅ Client mode: Centralized login
-function clientLogin(clientKey, redirectUri, options = {}) {
+function clientLogin(clientKey, redirectUri) {
   const { accountUiUrl } = getConfig();
-  const { codeChallenge, codeChallengeMethod, state } = options;
   
-  // Build URL with PKCE and state parameters
   const params = new URLSearchParams({
-    client: clientKey,
-    redirect_uri: redirectUri
+    client: clientKey
   });
-  
-  if (codeChallenge) {
-    params.append('code_challenge', codeChallenge);
-    params.append('code_challenge_method', codeChallengeMethod || 'S256');
+  if (redirectUri) {
+    params.append('redirect_uri', redirectUri);
   }
-  
-  if (state) {
-    params.append('state', state);
-  }
-  
   const centralizedLoginUrl = `${accountUiUrl}/login?${params.toString()}`;
   
   console.log('🔄 Client Login: Redirecting to centralized login', {
     clientKey,
     redirectUri,
-    hasPKCE: !!codeChallenge,
-    hasState: !!state,
     centralizedUrl: centralizedLoginUrl
   });
 
@@ -187,22 +160,11 @@ export function handleCallback() {
   const params = new URLSearchParams(window.location.search);
   const accessToken = params.get('access_token');
   const error = params.get('error');
-  const state = params.get('state');
 
   console.log('🔄 Callback handling:', {
     hasAccessToken: !!accessToken,
-    error,
-    hasState: !!state
+    error
   });
-
-  // ✅ Validate state parameter
- if (state) {
-  console.warn("⚠️ State returned but validation disabled (demo mode)");
-
-  // Clean up any existing stored state
-  sessionStorage.removeItem('oauth_state');
-  sessionStorage.removeItem('pkce_timestamp');
-}
 
   // ✅ Prevent duplicate callback processing
   if (callbackProcessed) {
@@ -218,7 +180,6 @@ export function handleCallback() {
   callbackProcessed = true;
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
-  sessionStorage.removeItem('pkce_code_verifier'); // Clear PKCE verifier after use
 
   if (error) {
     const errorDescription = params.get('error_description') || error;

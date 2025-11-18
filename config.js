@@ -5,7 +5,6 @@ let config = {
   redirectUri: null,
   accountUiUrl: null,
   isRouter: false, // ✅ Add router flag
-  usePkce: false,
 };
 
 export function setConfig(customConfig = {}) {
