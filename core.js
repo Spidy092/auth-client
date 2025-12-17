@@ -189,17 +189,21 @@ export function handleCallback() {
   if (accessToken) {
     setToken(accessToken);
     
-    // ✅ Refresh token should NOT be in URL - it's in httpOnly cookie
-    // If refresh token is in URL, log warning but don't store it client-side
+    // ✅ For HTTP development, store refresh token from URL
+    // In HTTPS production, refresh token is in httpOnly cookie (more secure)
     const refreshTokenInUrl = params.get('refresh_token');
     if (refreshTokenInUrl) {
-      console.warn('⚠️ SECURITY WARNING: Refresh token found in URL - this should not happen!');
-      // DO NOT store refresh token from URL - it should only be in httpOnly cookie
+      const isHttpDev = typeof window !== 'undefined' && window.location?.protocol === 'http:';
+      if (isHttpDev) {
+        console.log('📦 HTTP dev mode: Storing refresh token from callback URL');
+        setRefreshToken(refreshTokenInUrl);
+      } else {
+        console.log('🔒 HTTPS mode: Refresh token is in httpOnly cookie (ignoring URL param)');
+      }
     }
     
     const url = new URL(window.location);
     url.searchParams.delete('access_token');
-    url.searchParams.delete('refresh_token');
     url.searchParams.delete('refresh_token');
     url.searchParams.delete('state');
     url.searchParams.delete('error');
