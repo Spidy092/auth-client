@@ -233,15 +233,31 @@ export async function refreshToken() {
   refreshInProgress = true;
   refreshPromise = (async () => {
     try {
+      // Get stored refresh token (for HTTP development)
+      const storedRefreshToken = getRefreshToken();
+      
       console.log('🔄 Refreshing token:', { 
         clientKey, 
-        mode: isRouterMode() ? 'ROUTER' : 'CLIENT' 
+        mode: isRouterMode() ? 'ROUTER' : 'CLIENT',
+        hasStoredRefreshToken: !!storedRefreshToken
       });
       
-      const response = await fetch(`${authBaseUrl}/refresh/${clientKey}`, {
+      // Build request options - send refresh token in body and header for HTTP dev
+      const requestOptions = {
         method: 'POST',
-        credentials: 'include', // ✅ Include httpOnly cookies
-      });
+        credentials: 'include', // ✅ Include httpOnly cookies (for HTTPS)
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      };
+      
+      // For HTTP development, send refresh token in body and header
+      if (storedRefreshToken) {
+        requestOptions.headers['X-Refresh-Token'] = storedRefreshToken;
+        requestOptions.body = JSON.stringify({ refreshToken: storedRefreshToken });
+      }
+      
+      const response = await fetch(`${authBaseUrl}/refresh/${clientKey}`, requestOptions);
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -249,7 +265,8 @@ export async function refreshToken() {
         throw new Error(`Refresh failed: ${response.status}`);
       }
 
-      const { access_token } = await response.json();
+      const data = await response.json();
+      const { access_token, refresh_token: new_refresh_token } = data;
       
       if (!access_token) {
         throw new Error('No access token in refresh response');
@@ -257,6 +274,13 @@ export async function refreshToken() {
       
       // ✅ This will trigger token listeners
       setToken(access_token);
+      
+      // ✅ Store new refresh token if provided (token rotation)
+      if (new_refresh_token) {
+        setRefreshToken(new_refresh_token);
+        console.log('🔄 New refresh token stored from rotation');
+      }
+      
       console.log('✅ Token refresh successful, listeners notified');
       return access_token;
     } catch (err) {
