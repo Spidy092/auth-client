@@ -1,7 +1,7 @@
 // auth-client/index.js
 import { setConfig, getConfig, isRouterMode } from './config';
 import { login, logout, handleCallback, refreshToken, resetCallbackState, validateCurrentSession } from './core';
-import { getToken, setToken, clearToken, addTokenListener, removeTokenListener, getListenerCount } from './token';
+import { getToken, setToken, clearToken, setRefreshToken, getRefreshToken, clearRefreshToken, addTokenListener, removeTokenListener, getListenerCount } from './token';
 import api from './api';
 import { decodeToken, isTokenExpired, isAuthenticated } from './utils/jwt';
 
@@ -23,6 +23,9 @@ export const auth = {
   getToken,
   setToken,
   clearToken,
+  setRefreshToken,     // ✅ Refresh token for HTTP dev
+  getRefreshToken,
+  clearRefreshToken,
   addTokenListener,    // ✅ Export new functions
   removeTokenListener,
   getListenerCount,    // ✅ Debug function

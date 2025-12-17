@@ -145,77 +145,55 @@ export function clearToken() {
   });
 }
 
-// ========== REFRESH TOKEN STORAGE FOR HTTP DEVELOPMENT ==========
-// In production, refresh tokens should ONLY be in httpOnly cookies set by server
-// For HTTP development (cross-origin cookies don't work), we store in localStorage
-const REFRESH_TOKEN_KEY = 'auth_refresh_token';
-
-function isHttpDevelopment() {
-  try {
-    return typeof window !== 'undefined' &&
-      window.location?.protocol === 'http:';
-  } catch (err) {
-    return false;
-  }
-}
-
 export function setRefreshToken(token) {
+  // ✅ SECURITY: Refresh tokens should ONLY be in httpOnly cookies set by server
+  // This function should NOT be used - refresh tokens must come from server cookies
+  // Keeping for backwards compatibility but logging warning
+
   if (!token) {
     clearRefreshToken();
     return;
   }
 
-  // For HTTP development, store in localStorage (since httpOnly cookies don't work cross-origin)
-  if (isHttpDevelopment()) {
-    try {
-      localStorage.setItem(REFRESH_TOKEN_KEY, token);
-      console.log('📦 Refresh token stored in localStorage (HTTP dev mode)');
-    } catch (err) {
-      console.warn('Could not store refresh token:', err);
-    }
-  } else {
-    // In production (HTTPS), refresh token should be in httpOnly cookie only
-    console.log('🔒 Refresh token managed by server httpOnly cookie (production mode)');
+  console.warn('⚠️ SECURITY WARNING: setRefreshToken() called - refresh tokens should only be in httpOnly cookies!');
+  console.warn('⚠️ Refresh tokens set client-side are insecure and should be removed');
+
+  // ❌ DO NOT store refresh token in client-side storage
+  // The server sets it in httpOnly cookie, which is the only secure way
+
+  // Only clear any existing client-side storage
+  try {
+    sessionStorage.removeItem(REFRESH_COOKIE);
+  } catch (err) {
+    // Ignore
   }
 }
 
 export function getRefreshToken() {
-  // For HTTP development, read from localStorage
-  if (isHttpDevelopment()) {
-    try {
-      const token = localStorage.getItem(REFRESH_TOKEN_KEY);
-      return token;
-    } catch (err) {
-      console.warn('Could not read refresh token:', err);
-      return null;
-    }
-  }
+  // ✅ Refresh tokens are stored in httpOnly cookies by the server
+  // We cannot read httpOnly cookies from JavaScript - they're only sent with requests
+  // This function is kept for backwards compatibility but returns null
+  // The refresh endpoint will automatically use the httpOnly cookie via credentials: 'include'
 
-  // In production, refresh token is in httpOnly cookie (not accessible via JS)
-  // The refresh endpoint uses credentials: 'include' to send the cookie
-  return null;
+  // ❌ DO NOT try to read refresh token from client-side storage
+  // httpOnly cookies are not accessible via document.cookie
+
+  console.warn('⚠️ getRefreshToken() called - refresh tokens are in httpOnly cookies and cannot be read from JavaScript');
+  console.warn('⚠️ The refresh endpoint will automatically use the httpOnly cookie via credentials: "include"');
+
+  return null; // Refresh token is in httpOnly cookie, not accessible to JavaScript
 }
 
 export function clearRefreshToken() {
-  // Clear localStorage (for HTTP dev)
-  try {
-    localStorage.removeItem(REFRESH_TOKEN_KEY);
-  } catch (err) {
-    // Ignore
-  }
-
-  // Clear cookie (for production)
   try {
     document.cookie = `${REFRESH_COOKIE}=; Path=/; SameSite=Strict${secureAttribute()}; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
   } catch (err) {
     console.warn('Could not clear refresh token cookie:', err);
   }
-
-  // Clear sessionStorage
   try {
     sessionStorage.removeItem(REFRESH_COOKIE);
   } catch (err) {
-    // Ignore
+    console.warn('Could not clear refresh token from sessionStorage:', err);
   }
 }
 
