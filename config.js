@@ -1,10 +1,37 @@
 // auth-client/config.js
+
+// ========== SESSION SECURITY CONFIGURATION ==========
+// These settings control how the auth-client handles token refresh and session validation
+// to ensure deleted sessions in Keycloak are detected quickly.
+
 let config = {
   clientKey: null,
   authBaseUrl: null,
   redirectUri: null,
   accountUiUrl: null,
   isRouter: false, // ✅ Add router flag
+
+  // ========== SESSION SECURITY SETTINGS ==========
+  // Buffer time (in seconds) before token expiry to trigger proactive refresh
+  // With 5-minute access tokens, refreshing 60s before expiry ensures seamless UX
+  tokenRefreshBuffer: 60,
+
+  // Interval (in milliseconds) for periodic session validation
+  // Validates that the session still exists in Keycloak (not deleted by admin)
+  // Default: 2 minutes (120000ms) - balances responsiveness vs server load
+  sessionValidationInterval: 2 * 60 * 1000,
+
+  // Enable/disable periodic session validation
+  // When enabled, the client will ping the server to verify session is still active
+  enableSessionValidation: true,
+
+  // Enable/disable proactive token refresh
+  // When enabled, tokens are refreshed before they expire (using tokenRefreshBuffer)
+  enableProactiveRefresh: true,
+
+  // Validate session when browser tab becomes visible again
+  // Catches session deletions that happened while the tab was inactive
+  validateOnVisibility: true,
 };
 
 export function setConfig(customConfig = {}) {

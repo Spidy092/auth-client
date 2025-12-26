@@ -1,7 +1,36 @@
 // auth-client/index.js
 import { setConfig, getConfig, isRouterMode } from './config';
-import { login, logout, handleCallback, refreshToken, resetCallbackState, validateCurrentSession } from './core';
-import { getToken, setToken, clearToken, setRefreshToken, getRefreshToken, clearRefreshToken, addTokenListener, removeTokenListener, getListenerCount } from './token';
+import {
+  login,
+  logout,
+  handleCallback,
+  refreshToken,
+  resetCallbackState,
+  validateCurrentSession,
+  // Session Security Functions
+  startProactiveRefresh,
+  stopProactiveRefresh,
+  startSessionMonitor,
+  stopSessionMonitor,
+  startSessionSecurity,
+  stopSessionSecurity,
+  onSessionInvalid
+} from './core';
+import {
+  getToken,
+  setToken,
+  clearToken,
+  setRefreshToken,
+  getRefreshToken,
+  clearRefreshToken,
+  addTokenListener,
+  removeTokenListener,
+  getListenerCount,
+  // Token Expiry Utilities
+  getTokenExpiryTime,
+  getTimeUntilExpiry,
+  willExpireSoon
+} from './token';
 import api from './api';
 import { decodeToken, isTokenExpired, isAuthenticated } from './utils/jwt';
 
@@ -38,8 +67,23 @@ export const auth = {
   isTokenExpired,
   isAuthenticated,
 
-  // 🔄 Auto-refresh setup
+  // ⏱️ Token Expiry Utilities (NEW)
+  getTokenExpiryTime,    // Get token expiry as Date object
+  getTimeUntilExpiry,    // Get seconds until token expires
+  willExpireSoon,        // Check if token expires within N seconds
+
+  // 🔐 Session Security (NEW - Short-lived tokens + Periodic validation)
+  startProactiveRefresh,   // Start proactive token refresh before expiry
+  stopProactiveRefresh,    // Stop proactive refresh
+  startSessionMonitor,     // Start periodic session validation
+  stopSessionMonitor,      // Stop session validation
+  startSessionSecurity,    // Start both proactive refresh AND session monitoring
+  stopSessionSecurity,     // Stop all session security
+  onSessionInvalid,        // Register callback for session invalidation
+
+  // 🔄 Legacy auto-refresh (DEPRECATED - use startSessionSecurity instead)
   startTokenRefresh: () => {
+    console.warn('⚠️ startTokenRefresh is deprecated. Use startSessionSecurity() instead for better session management.');
     const interval = setInterval(async () => {
       const token = getToken();
       if (token && isTokenExpired(token, 300)) {
@@ -59,3 +103,4 @@ export const auth = {
 export { AuthProvider } from './react/AuthProvider';
 export { useAuth } from './react/useAuth';
 export { useSessionMonitor } from './react/useSessionMonitor';
+

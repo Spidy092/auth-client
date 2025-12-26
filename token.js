@@ -102,6 +102,30 @@ function isExpired(token, bufferSeconds = 60) {
   return decoded.exp < now + bufferSeconds;
 }
 
+// ========== TOKEN EXPIRY UTILITIES ==========
+// Get the exact expiry time of a token as a Date object
+export function getTokenExpiryTime(token) {
+  if (!token) return null;
+  const decoded = decode(token);
+  if (!decoded?.exp) return null;
+  return new Date(decoded.exp * 1000);
+}
+
+// Get seconds until token expires (negative if already expired)
+export function getTimeUntilExpiry(token) {
+  if (!token) return -1;
+  const decoded = decode(token);
+  if (!decoded?.exp) return -1;
+  const now = Date.now() / 1000;
+  return Math.floor(decoded.exp - now);
+}
+
+// Check if token will expire within the next N seconds
+export function willExpireSoon(token, withinSeconds = 60) {
+  const timeLeft = getTimeUntilExpiry(token);
+  return timeLeft >= 0 && timeLeft <= withinSeconds;
+}
+
 export function setToken(token) {
   const previousToken = accessToken;
   accessToken = token || null;
@@ -152,8 +176,8 @@ const REFRESH_TOKEN_KEY = 'auth_refresh_token';
 
 function isHttpDevelopment() {
   try {
-    return typeof window !== 'undefined' && 
-           window.location?.protocol === 'http:';
+    return typeof window !== 'undefined' &&
+      window.location?.protocol === 'http:';
   } catch (err) {
     return false;
   }
@@ -190,7 +214,7 @@ export function getRefreshToken() {
       return null;
     }
   }
-  
+
   // In production, refresh token is in httpOnly cookie (not accessible via JS)
   // The refresh endpoint uses credentials: 'include' to send the cookie
   return null;
@@ -203,14 +227,14 @@ export function clearRefreshToken() {
   } catch (err) {
     // Ignore
   }
-  
+
   // Clear cookie (for production)
   try {
     document.cookie = `${REFRESH_COOKIE}=; Path=/; SameSite=Strict${secureAttribute()}; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
   } catch (err) {
     console.warn('Could not clear refresh token cookie:', err);
   }
-  
+
   // Clear sessionStorage
   try {
     sessionStorage.removeItem(REFRESH_COOKIE);
