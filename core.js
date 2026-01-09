@@ -116,7 +116,7 @@ async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
 
   try {
     const response = await fetch(`${authBaseUrl}/logout/${clientKey}`, {
-      method: 'GET',
+      method: 'POST',
       credentials: 'include',
       headers: {
         'Authorization': token ? `Bearer ${token}` : '',
@@ -414,8 +414,23 @@ export function startProactiveRefresh() {
       startProactiveRefresh();
     } catch (err) {
       console.error('❌ Proactive refresh failed:', err);
-      // Try again in 30 seconds if refresh fails
-      proactiveRefreshTimer = setTimeout(() => startProactiveRefresh(), 30000);
+
+      // Check if this is a permanent failure (token revoked, invalid, etc.)
+      const errorMessage = err.message?.toLowerCase() || '';
+      const isPermanentFailure =
+        errorMessage.includes('401') ||
+        errorMessage.includes('revoked') ||
+        errorMessage.includes('invalid') ||
+        errorMessage.includes('expired') ||
+        errorMessage.includes('unauthorized');
+
+      if (isPermanentFailure) {
+        console.log('🚨 Token permanently invalid, triggering session expiry');
+        notifySessionInvalid('refresh_token_revoked');
+      } else {
+        // Temporary failure (network issue), try again in 30 seconds
+        proactiveRefreshTimer = setTimeout(() => startProactiveRefresh(), 30000);
+      }
     }
   }, refreshIn);
 

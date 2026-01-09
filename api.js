@@ -12,7 +12,7 @@ api.interceptors.request.use((config) => {
   const runtimeConfig = getConfig();
 
   if (!config.baseURL) {
-    
+
     config.baseURL = runtimeConfig?.authBaseUrl || 'http://auth.local.test:4000/auth';
   }
 
