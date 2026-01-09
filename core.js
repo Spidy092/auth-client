@@ -133,21 +133,18 @@ async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
     clearRefreshToken();
     clearToken();
 
-    await new Promise(resolve => setTimeout(resolve, 5000));
-
-    if (data.success && data.keycloakLogoutUrl) {
-      window.location.href = data.keycloakLogoutUrl;
-      return;
-    }
+    // Skip Keycloak confirmation page - redirect directly to login
+    // Backend has already revoked the session/tokens
+    console.log('🔄 Redirecting to login (skipping Keycloak confirmation)');
+    window.location.href = '/login';
 
   } catch (error) {
     console.warn('⚠️ Logout failed:', error);
     clearRefreshToken();
     clearToken();
+    // Still redirect to login even on error
+    window.location.href = '/login';
   }
-
-  await new Promise(resolve => setTimeout(resolve, 5000));
-  window.location.href = '/login';
 }
 
 function clientLogout(clientKey, accountUiUrl) {
