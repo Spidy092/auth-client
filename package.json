@@ -2,22 +2,37 @@
   "name": "@spidy092/auth-client",
   "version": "2.1.8",
   "description": "Scalable frontend auth SDK for centralized login using Keycloak + Auth Service.",
-  "main": "index.js",
-  "module": "index.js",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
   "type": "module",
   "exports": {
-    ".": "./index.js",
-    "./react/AuthProvider": "./react/AuthProvider.jsx",
-    "./react/useAuth": "./react/useAuth.js"
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./react/AuthProvider": {
+      "import": "./dist/react/AuthProvider.js",
+      "require": "./dist/react/AuthProvider.cjs"
+    },
+    "./react/useAuth": {
+      "import": "./dist/react/useAuth.js",
+      "require": "./dist/react/useAuth.cjs"
+    },
+    "./react/useSessionMonitor": {
+      "import": "./dist/react/useSessionMonitor.js",
+      "require": "./dist/react/useSessionMonitor.cjs"
+    },
+    "./api": {
+      "import": "./dist/api.js",
+      "require": "./dist/api.cjs"
+    },
+    "./utils/jwt": {
+      "import": "./dist/utils/jwt.js",
+      "require": "./dist/utils/jwt.cjs"
+    }
   },
   "files": [
-    "*.js",
-    "react/",
-    "utils/",
-    "token.js",
-    "core.js",
-    "config.js",
-    "api.js",
+    "dist",
     "README.md"
   ],
   "keywords": [
@@ -53,7 +68,13 @@
     "npm": ">=6.0.0"
   },
   "scripts": {
+    "build": "tsup",
     "test": "echo \"Error: no test specified\" && exit 1",
     "prepublishOnly": "echo 'Run build scripts here if needed'"
+  },
+  "devDependencies": {
+    "@tanstack/react-query": "^5.90.20",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
   }
 }

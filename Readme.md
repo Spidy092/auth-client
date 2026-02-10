@@ -10,6 +10,15 @@ A lightweight, framework-agnostic authentication client SDK designed for scalabl
 npm install @spidy092/auth-client
 ```
 
+> **Note:** This package supports both **ES Modules (`import`)** and **CommonJS (`require`)**.
+> 
+> **CommonJS Usage:**
+> ```js
+> const { auth } = require('auth-client');
+> const api = require('auth-client/api').default; // Note: .default is required for api
+> const { decodeToken } = require('auth-client/utils/jwt');
+> ```
+
 ---
 
 ## 🔧 Setup

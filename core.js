@@ -7,6 +7,7 @@ import {
   setRefreshToken,
   getRefreshToken,
   clearRefreshToken,
+  getTimeUntilExpiry,
 } from './token';
 import { getConfig, isRouterMode } from './config';
 
@@ -385,7 +386,6 @@ export function startProactiveRefresh() {
     return null;
   }
 
-  const { getTimeUntilExpiry } = require('./token');
   const timeUntilExpiry = getTimeUntilExpiry(token);
 
   if (timeUntilExpiry <= 0) {
