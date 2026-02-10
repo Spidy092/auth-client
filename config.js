@@ -1,4 +1,5 @@
 // auth-client/config.js
+import { enableRefreshTokenPersistence } from './token';
 
 // ========== SESSION SECURITY CONFIGURATION ==========
 // These settings control how the auth-client handles token refresh and session validation
@@ -18,8 +19,8 @@ let config = {
 
   // Interval (in milliseconds) for periodic session validation
   // Validates that the session still exists in Keycloak (not deleted by admin)
-  // Default: 2 minutes (120000ms) - balances responsiveness vs server load
-  sessionValidationInterval: 2 * 60 * 1000,
+  // Default: 15 minutes (900000ms) - Increased from 2m to avoid frequent checks
+  sessionValidationInterval: 15 * 60 * 1000,
 
   // Enable/disable periodic session validation
   // When enabled, the client will ping the server to verify session is still active
@@ -32,6 +33,13 @@ let config = {
   // Validate session when browser tab becomes visible again
   // Catches session deletions that happened while the tab was inactive
   validateOnVisibility: true,
+
+  // ========== REFRESH TOKEN PERSISTENCE ==========
+  // When true, stores refresh token in localStorage even on HTTPS
+  // Required for local dev with mkcert/self-signed certs where httpOnly cookies
+  // may not work reliably across origins
+  // ⚠️ In true production, set to false and rely on httpOnly cookies
+  persistRefreshToken: false,
 };
 
 export function setConfig(customConfig = {}) {
@@ -47,9 +55,16 @@ export function setConfig(customConfig = {}) {
     isRouter: customConfig.isRouter || customConfig.clientKey === 'account-ui'
   };
 
+  // ✅ Wire persistRefreshToken to token.js
+  if (config.persistRefreshToken) {
+    enableRefreshTokenPersistence(true);
+    console.log('📦 Refresh token persistence ENABLED (localStorage on HTTPS)');
+  }
+
   console.log(`🔧 Auth Client Mode: ${config.isRouter ? 'ROUTER' : 'CLIENT'}`, {
     clientKey: config.clientKey,
-    isRouter: config.isRouter
+    isRouter: config.isRouter,
+    persistRefreshToken: config.persistRefreshToken
   });
 }
 

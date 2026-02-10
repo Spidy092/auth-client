@@ -187,13 +187,15 @@ export function handleCallback() {
   if (accessToken) {
     setToken(accessToken);
 
-    // ✅ For HTTP development, store refresh token from URL
-    // In HTTPS production, refresh token is in httpOnly cookie (more secure)
+    // ✅ Store refresh token from URL when persistence is enabled OR in HTTP dev mode
+    // When persistRefreshToken is true, we always store it (needed for local HTTPS with mkcert)
+    // When false, only store on HTTP (HTTPS relies on httpOnly cookies from server)
     const refreshTokenInUrl = params.get('refresh_token');
     if (refreshTokenInUrl) {
+      const { persistRefreshToken } = getConfig();
       const isHttpDev = typeof window !== 'undefined' && window.location?.protocol === 'http:';
-      if (isHttpDev) {
-        console.log('📦 HTTP dev mode: Storing refresh token from callback URL');
+      if (persistRefreshToken || isHttpDev) {
+        console.log(`📦 Storing refresh token from callback URL (${persistRefreshToken ? 'persistence enabled' : 'HTTP dev mode'})`);
         setRefreshToken(refreshTokenInUrl);
       } else {
         console.log('🔒 HTTPS mode: Refresh token is in httpOnly cookie (ignoring URL param)');
