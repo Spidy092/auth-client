@@ -255,10 +255,11 @@ export async function refreshToken() {
         }
       };
 
-      // For HTTP development, send refresh token in body and header
+      // For HTTP development, send refresh token in body ONLY (header removed per user request)
       if (storedRefreshToken) {
-        requestOptions.headers['X-Refresh-Token'] = storedRefreshToken;
+        // requestOptions.headers['X-Refresh-Token'] = storedRefreshToken;
         requestOptions.body = JSON.stringify({ refreshToken: storedRefreshToken });
+        console.log('📦 Sending refresh token in body only (Header skipped) v3.0.2');
       }
 
       const response = await fetch(`${authBaseUrl}/refresh/${clientKey}`, requestOptions);
