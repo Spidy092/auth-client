@@ -473,7 +473,11 @@ export function startSessionMonitor(onInvalid) {
 
   console.log(`👁️ Starting session monitor (interval: ${sessionValidationInterval / 1000}s)`);
 
-  // Periodic validation
+  // Track when the tab was last hidden — used to decide if a full
+  // server-side validation is warranted after the tab becomes visible.
+  let hiddenAt = null;
+
+  // ── Periodic validation (catches admin-deleted sessions) ──
   sessionValidationTimer = setInterval(async () => {
     try {
       const currentToken = getToken();
@@ -483,7 +487,24 @@ export function startSessionMonitor(onInvalid) {
         return;
       }
 
-      console.log('🔍 Validating session...');
+      // If token is expired, refresh first so the validation call succeeds
+      const ttl = getTimeUntilExpiry(currentToken);
+      if (ttl <= 0) {
+        console.log('� Token expired before periodic check — refreshing');
+        try {
+          await refreshToken();
+        } catch (refreshErr) {
+          console.log('❌ Periodic refresh failed — session expired');
+          stopSessionMonitor();
+          stopProactiveRefresh();
+          clearToken();
+          clearRefreshToken();
+          notifySessionInvalid('session_deleted');
+          return;
+        }
+      }
+
+      console.log('�🔍 Validating session...');
       const isValid = await validateCurrentSession();
 
       if (!isValid) {
@@ -502,27 +523,86 @@ export function startSessionMonitor(onInvalid) {
     }
   }, sessionValidationInterval);
 
-  // Visibility-based validation (when tab becomes visible again)
+  // ── Visibility-based validation (smart, enterprise-grade) ──
   if (validateOnVisibility && typeof document !== 'undefined') {
     visibilityHandler = async () => {
+      // ── Tab hidden: record timestamp ──
+      if (document.visibilityState === 'hidden') {
+        hiddenAt = Date.now();
+        return;
+      }
+
+      // ── Tab visible: decide what to do ──
       if (document.visibilityState === 'visible') {
         const currentToken = getToken();
         if (!currentToken) return;
 
-        console.log('👁️ Tab visible - validating session');
-        try {
-          const isValid = await validateCurrentSession();
-          if (!isValid) {
-            console.log('❌ Session expired while tab was hidden');
+        const ttl = getTimeUntilExpiry(currentToken);
+        const hiddenDuration = hiddenAt ? Date.now() - hiddenAt : 0;
+        hiddenAt = null;
+
+        // ── Case 1: Token still valid & tab was hidden briefly ──
+        // No network call needed — everything is fine.
+        if (ttl > 0 && hiddenDuration < sessionValidationInterval) {
+          console.log(`👁️ Tab visible — token valid (${Math.round(ttl)}s left), hidden for ${Math.round(hiddenDuration / 1000)}s — skipping validation`);
+          return;
+        }
+
+        // ── Case 2: Token still valid BUT tab was hidden longer than validation interval ──
+        // Validate with server to catch admin-deleted sessions.
+        if (ttl > 0 && hiddenDuration >= sessionValidationInterval) {
+          console.log(`👁️ Tab visible — token valid but hidden for ${Math.round(hiddenDuration / 1000)}s — server-validating`);
+          try {
+            const isValid = await validateCurrentSession();
+            if (isValid) {
+              console.log('✅ Session confirmed valid on server');
+              return;
+            }
+            // Server says invalid despite valid token — admin deleted session
+            console.log('❌ Session deleted by admin while tab was hidden');
             stopSessionMonitor();
             stopProactiveRefresh();
             clearToken();
             clearRefreshToken();
             notifySessionInvalid('session_deleted_while_hidden');
+            return;
+          } catch (error) {
+            // Network error — give benefit of the doubt, token is valid
+            console.warn('⚠️ Server validation failed (network), token still valid — continuing');
+            return;
           }
-        } catch (error) {
-          console.warn('⚠️ Visibility check failed:', error.message);
         }
+
+        // ── Case 3: Token expired (browser throttled the refresh timer) ──
+        // Try silent refresh — this is the most common case.
+        console.log('⚠️ Token expired while tab was hidden — attempting silent refresh');
+        try {
+          await refreshToken();
+          console.log('✅ Token silently refreshed — session restored');
+
+          // If hidden for a long time, also verify the session on server
+          if (hiddenDuration >= sessionValidationInterval) {
+            const isValid = await validateCurrentSession();
+            if (!isValid) {
+              console.log('❌ Token refreshed but session deleted on server');
+              stopSessionMonitor();
+              stopProactiveRefresh();
+              clearToken();
+              clearRefreshToken();
+              notifySessionInvalid('session_deleted_while_hidden');
+            }
+          }
+          return;
+        } catch (refreshErr) {
+          console.log('❌ Silent refresh failed — session genuinely expired:', refreshErr.message);
+        }
+
+        // Both refresh AND validation failed — session truly dead
+        stopSessionMonitor();
+        stopProactiveRefresh();
+        clearToken();
+        clearRefreshToken();
+        notifySessionInvalid('session_deleted_while_hidden');
       }
     };
     document.addEventListener('visibilitychange', visibilityHandler);
