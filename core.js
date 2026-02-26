@@ -328,8 +328,10 @@ export async function validateCurrentSession() {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
-    const data = await response.json();
-    return data.valid === true;
+    const json = await response.json();
+    // Support both wrapped { success, data: { valid } } and flat { valid } formats
+    const payload = json.data || json;
+    return payload.valid === true;
   } catch (error) {
     console.warn('Session validation failed:', error.message);
     if (error.message.includes('401')) {
