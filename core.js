@@ -90,31 +90,25 @@ function clientLogin(clientKey, redirectUri) {
   window.location.href = centralizedLoginUrl;
 }
 
-export function logout() {
+export async function logout() {
   resetCallbackState();
 
   const { clientKey, authBaseUrl, accountUiUrl } = getConfig();
   const token = getToken();
+  const refreshToken = getRefreshToken();
 
-  console.log('🚪 Smart Logout initiated');
+  console.log('🚪 Smart Logout initiated', { mode: isRouterMode() ? 'ROUTER' : 'CLIENT', clientKey });
 
   clearToken();
   clearRefreshToken();
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
 
-  if (isRouterMode()) {
-    return routerLogout(clientKey, authBaseUrl, accountUiUrl, token);
-  } else {
-    return clientLogout(clientKey, accountUiUrl);
-  }
-}
-
-async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
-  console.log('🏭 Router Logout');
-
-  const refreshToken = getRefreshToken();
-
+  // Every client — router or not — must hit the backend so it can:
+  //  1. revoke the refresh token record, and
+  //  2. hand back a Keycloak end-session URL so the IdP's SSO cookie is
+  //     actually killed. Without step 2 the browser stays signed in at
+  //     Keycloak and silently re-authenticates on the next login attempt.
   try {
     const response = await fetch(`${authBaseUrl}/logout/${clientKey}`, {
       method: 'POST',
@@ -123,35 +117,25 @@ async function routerLogout(clientKey, authBaseUrl, accountUiUrl, token) {
         'Authorization': token ? `Bearer ${token}` : '',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        refreshToken: refreshToken
-      })
+      body: JSON.stringify({ refreshToken })
     });
 
     const data = await response.json();
     console.log('✅ Logout response:', data);
 
-    clearRefreshToken();
-    clearToken();
-
-    // Skip Keycloak confirmation page - redirect directly to login
-    // Backend has already revoked the session/tokens
-    console.log('🔄 Redirecting to login (skipping Keycloak confirmation)');
-    window.location.href = '/login';
-
+    if (data?.keycloakLogoutUrl) {
+      window.location.href = data.keycloakLogoutUrl;
+      return;
+    }
   } catch (error) {
-    console.warn('⚠️ Logout failed:', error);
-    clearRefreshToken();
-    clearToken();
-    // Still redirect to login even on error
-    window.location.href = '/login';
+    console.warn('⚠️ Logout backend call failed:', error);
   }
-}
 
-function clientLogout(clientKey, accountUiUrl) {
-  console.log('🔄 Client Logout');
-  const logoutUrl = `${accountUiUrl}/login?client=${clientKey}&logout=true`;
-  window.location.href = logoutUrl;
+  // Fallback only if the backend call failed or returned no logout URL —
+  // the Keycloak SSO session may still be alive in this case.
+  window.location.href = isRouterMode()
+    ? '/login'
+    : `${accountUiUrl}/login?client=${clientKey}&logout=true`;
 }
 
 export function handleCallback() {
