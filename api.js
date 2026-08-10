@@ -60,7 +60,9 @@ api.interceptors.response.use(
         })
         .catch((refreshError) => {
           refreshPromise = null;
-          clearToken();
+          // ❌ REMOVED: clearToken() here caused cascading logouts.
+          // The calling code (AuthContext) handles token clearing
+          // based on the specific error context (401 vs network error).
           throw refreshError;
         });
     }
@@ -73,7 +75,9 @@ api.interceptors.response.use(
         return api(config);
       }
     } catch (refreshErr) {
-      return Promise.reject(refreshErr);
+      // Refresh failed — propagate the ORIGINAL 401 error so the caller
+      // knows the request was unauthorized (not a refresh-specific error).
+      return Promise.reject(error);
     }
 
     return Promise.reject(error);

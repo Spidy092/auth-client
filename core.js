@@ -274,9 +274,17 @@ export async function refreshToken() {
       return access_token;
     } catch (err) {
       console.error('❌ Token refresh error:', err);
-      // ✅ This will trigger token listeners
-      clearToken();
-      clearRefreshToken();
+      // Only clear tokens on definitive auth failure (server explicitly rejected).
+      // Network errors / timeouts should NOT clear tokens — the session may still
+      // be valid and the next attempt may succeed.
+      const isAuthRejection = err.message?.includes('401') ||
+        err.message?.includes('403') ||
+        err.message?.includes('invalid_grant') ||
+        err.message?.includes('Refresh failed: 4');
+      if (isAuthRejection) {
+        clearToken();
+        clearRefreshToken();
+      }
       throw err;
     } finally {
       refreshInProgress = false;

@@ -275,7 +275,7 @@ export function getListenerCount() {
 
 export function isAuthenticated() {
   const token = getToken();
-  return !!token && !isExpired(token, 15);
+  return !!token && !isExpired(token, 10);
 }
 
 

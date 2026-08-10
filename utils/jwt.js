@@ -11,7 +11,7 @@ export function decodeToken(token) {
   }
 }
 
-export function isTokenExpired(token, bufferSeconds = 60) {
+export function isTokenExpired(token, bufferSeconds = 10) {
   const decoded = decodeToken(token);
   if (!decoded || !decoded.exp) return true;
   const currentTime = Date.now() / 1000;
@@ -19,9 +19,9 @@ export function isTokenExpired(token, bufferSeconds = 60) {
 }
 
 
-// ✅ Check if user is authenticated
+// ✅ Check if user is authenticated (uses minimal buffer for auth checks)
 export function isAuthenticated() {
   const token = getToken();
-  return !!token && !isTokenExpired(token);
+  return !!token && !isTokenExpired(token, 10);
 }
 
