@@ -484,29 +484,21 @@ export function startSessionMonitor(onInvalid) {
       // If token is expired, refresh first so the validation call succeeds
       const ttl = getTimeUntilExpiry(currentToken);
       if (ttl <= 0) {
-        console.log('� Token expired before periodic check — refreshing');
+        console.log('Token expired before periodic check - refreshing');
         try {
           await refreshToken();
         } catch (refreshErr) {
-          console.log('❌ Periodic refresh failed — session expired');
-          stopSessionMonitor();
-          stopProactiveRefresh();
-          clearToken();
-          clearRefreshToken();
-          notifySessionInvalid('session_deleted');
+          console.log('Periodic refresh failed - notifying consumer');
+          notifySessionInvalid('session_expired');
           return;
         }
       }
 
-      console.log('�🔍 Validating session...');
+      console.log('Validating session...');
       const isValid = await validateCurrentSession();
 
       if (!isValid) {
         console.log('❌ Session no longer valid on server');
-        stopSessionMonitor();
-        stopProactiveRefresh();
-        clearToken();
-        clearRefreshToken();
         notifySessionInvalid('session_deleted');
       } else {
         console.log('✅ Session still valid');
