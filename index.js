@@ -43,6 +43,8 @@ export const auth = {
   // 🔐 Core flows
   login,
   logout,
+  logoutClient: () => logout({ scope: 'client' }),
+  logoutSso: () => logout({ scope: 'sso' }),
   handleCallback,
   refreshToken,
   resetCallbackState,
@@ -103,4 +105,3 @@ export const auth = {
 export { AuthProvider } from './react/AuthProvider';
 export { useAuth } from './react/useAuth';
 export { useSessionMonitor } from './react/useSessionMonitor';
-

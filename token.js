@@ -273,10 +273,30 @@ export function getListenerCount() {
   return listeners.size;
 }
 
+// localStorage changes do not fire in the tab that made the change, but they
+// do fire in sibling tabs on the same origin. Keep the in-memory token cache
+// and React consumers synchronized when another tab logs in or out.
+if (typeof window !== 'undefined' && window.addEventListener) {
+  window.addEventListener('storage', (event) => {
+    if (event.key !== 'authToken') return;
+
+    const previousToken = accessToken;
+    accessToken = event.newValue || null;
+    if (previousToken === accessToken) return;
+
+    listeners.forEach((listener) => {
+      try {
+        listener(accessToken, previousToken);
+      } catch (err) {
+        console.warn('Token listener error:', err);
+      }
+    });
+  });
+}
+
 export function isAuthenticated() {
   const token = getToken();
   return !!token && !isExpired(token, 10);
 }
-
 
 

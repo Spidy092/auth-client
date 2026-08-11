@@ -111,15 +111,18 @@ export function AuthProvider({ children, onSessionExpired }) {
     coreLogin(clientKey, redirectUri, state);
   };
 
-  const logout = () => {
+  const logout = async (options) => {
     // Stop session security before logout
     stopSessionSecurity();
     sessionSecurityRef.current = null;
     
-    coreLogout();
-    setUser(null);
-    setTokenState(null);
-    setSessionValid(true);
+    try {
+      await coreLogout(options);
+    } finally {
+      setUser(null);
+      setTokenState(null);
+      setSessionValid(true);
+    }
   };
 
   const value = {
@@ -147,4 +150,3 @@ export function AuthProvider({ children, onSessionExpired }) {
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
-

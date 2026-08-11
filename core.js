@@ -90,14 +90,19 @@ function clientLogin(clientKey, redirectUri) {
   window.location.href = centralizedLoginUrl;
 }
 
-export async function logout() {
+export async function logout(options = {}) {
   resetCallbackState();
 
   const { clientKey, authBaseUrl, accountUiUrl } = getConfig();
+  const scope = options.scope === 'client' ? 'client' : 'sso';
   const token = getToken();
   const refreshToken = getRefreshToken();
 
-  console.log('🚪 Smart Logout initiated', { mode: isRouterMode() ? 'ROUTER' : 'CLIENT', clientKey });
+  console.log('🚪 Smart Logout initiated', {
+    mode: isRouterMode() ? 'ROUTER' : 'CLIENT',
+    clientKey,
+    scope,
+  });
 
   clearToken();
   clearRefreshToken();
@@ -117,14 +122,23 @@ export async function logout() {
         'Authorization': token ? `Bearer ${token}` : '',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ refreshToken })
+      body: JSON.stringify({ refreshToken, scope })
     });
+
+    if (!response.ok) {
+      throw new Error(`Logout failed: ${response.status}`);
+    }
 
     const data = await response.json();
     console.log('✅ Logout response:', data);
 
+    if (data?.logoutRedirectUrl) {
+      window.location.replace(data.logoutRedirectUrl);
+      return;
+    }
+
     if (data?.keycloakLogoutUrl) {
-      window.location.href = data.keycloakLogoutUrl;
+      window.location.replace(data.keycloakLogoutUrl);
       return;
     }
   } catch (error) {
@@ -133,9 +147,13 @@ export async function logout() {
 
   // Fallback only if the backend call failed or returned no logout URL —
   // the Keycloak SSO session may still be alive in this case.
-  window.location.href = isRouterMode()
-    ? '/login'
-    : `${accountUiUrl}/login?client=${clientKey}&logout=true`;
+  const fallbackUrl = isRouterMode()
+    ? new URL('/login', window.location.origin)
+    : new URL('/login', accountUiUrl);
+  fallbackUrl.searchParams.set('logged_out', 'true');
+  fallbackUrl.searchParams.set('client', clientKey);
+  fallbackUrl.searchParams.set('scope', scope);
+  window.location.replace(fallbackUrl.toString());
 }
 
 export function handleCallback() {
@@ -633,4 +651,3 @@ export function stopSessionSecurity() {
   sessionInvalidCallbacks.clear();
   console.log('🔐 Session security stopped');
 }
-
