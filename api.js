@@ -3,6 +3,7 @@ import axios from 'axios';
 import { getConfig } from './config';
 import { getToken, setToken, clearToken } from './token';
 import { refreshToken as performRefresh } from './core';
+import { diagnosticHeaders, emitAuthDiagnostic } from './diagnostics';
 
 const api = axios.create({
   withCredentials: true,
@@ -23,6 +24,7 @@ api.interceptors.request.use((config) => {
   if (runtimeConfig?.clientKey && !config.headers['X-Client-Key']) {
     config.headers['X-Client-Key'] = runtimeConfig.clientKey;
   }
+  Object.assign(config.headers, diagnosticHeaders());
 
   const token = getToken();
   if (token) {
@@ -48,6 +50,10 @@ api.interceptors.response.use(
     }
 
     config._retry = true;
+    emitAuthDiagnostic('API_401_REFRESH_STARTED', 'PENDING', 'HTTP_401', {
+      clientKey: getConfig().clientKey,
+      status: 401,
+    });
 
     if (!refreshPromise) {
       refreshPromise = performRefresh()

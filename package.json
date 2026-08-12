@@ -69,7 +69,7 @@
   },
   "scripts": {
     "build": "tsup",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test tests/*.test.js",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },

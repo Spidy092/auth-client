@@ -10,6 +10,14 @@ import {
   getTimeUntilExpiry,
 } from './token';
 import { getConfig, isRouterMode } from './config';
+import {
+  acquireLoginLock,
+  clearLoginLock,
+  diagnosticHeaders,
+  emitAuthDiagnostic,
+  getDiagnosticContext,
+  resetDiagnosticContext,
+} from './diagnostics';
 
 let callbackProcessed = false;
 
@@ -27,15 +35,17 @@ export function login(clientKeyArg, redirectUriArg) {
   const clientKey = clientKeyArg || defaultClientKey;
   const redirectUri = redirectUriArg || defaultRedirectUri;
 
-  console.log('🔄 Smart Login initiated:', {
-    mode: isRouterMode() ? 'ROUTER' : 'CLIENT',
-    clientKey,
-    redirectUri
-  });
-
   if (!clientKey || !redirectUri) {
+    emitAuthDiagnostic('LOGIN_REJECTED', 'FAILURE', 'CLIENT_CONFIG_MISSING', { clientKey });
     throw new Error('Missing clientKey or redirectUri');
   }
+
+  if (!acquireLoginLock(clientKey, redirectUri)) {
+    emitAuthDiagnostic('LOGIN_DUPLICATE_SUPPRESSED', 'WARNING', 'LOGIN_ALREADY_IN_PROGRESS', { clientKey });
+    return false;
+  }
+  resetDiagnosticContext();
+  emitAuthDiagnostic('LOGIN_INITIATED', 'PENDING', 'NONE', { clientKey });
 
   sessionStorage.setItem('originalApp', clientKey);
   sessionStorage.setItem('returnUrl', redirectUri);
@@ -57,14 +67,9 @@ function routerLogin(clientKey, redirectUri) {
   if (redirectUri) {
     params.append('redirect_uri', redirectUri);
   }
+  params.append('correlation_id', getDiagnosticContext().correlationId);
   const query = params.toString();
   const backendLoginUrl = `${authBaseUrl}/login/${clientKey}${query ? `?${query}` : ''}`;
-
-  console.log('🏭 Router Login: Direct backend authentication', {
-    clientKey,
-    redirectUri,
-    backendUrl: backendLoginUrl
-  });
 
   window.location.href = backendLoginUrl;
 }
@@ -80,12 +85,6 @@ function clientLogin(clientKey, redirectUri) {
     params.append('redirect_uri', redirectUri);
   }
   const centralizedLoginUrl = `${accountUiUrl}/login?${params.toString()}`;
-
-  console.log('🔄 Client Login: Redirecting to centralized login', {
-    clientKey,
-    redirectUri,
-    centralizedUrl: centralizedLoginUrl
-  });
 
   window.location.href = centralizedLoginUrl;
 }
@@ -119,6 +118,7 @@ export async function logout(options = {}) {
       method: 'POST',
       credentials: 'include',
       headers: {
+        ...diagnosticHeaders(),
         'Authorization': token ? `Bearer ${token}` : '',
         'Content-Type': 'application/json'
       },
@@ -178,12 +178,20 @@ export function handleCallback() {
   }
 
   callbackProcessed = true;
+  clearLoginLock();
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
 
   if (error) {
     const errorDescription = params.get('error_description') || error;
-    throw new Error(`Authentication failed: ${errorDescription}`);
+    const authError = new Error(`Authentication failed: ${errorDescription}`);
+    authError.code = error;
+    authError.correlationId = getDiagnosticContext().correlationId;
+    emitAuthDiagnostic('CALLBACK_REJECTED', 'FAILURE', error.toUpperCase(), {
+      clientKey: getConfig().clientKey,
+      state: params.get('state'),
+    });
+    throw authError;
   }
 
   if (accessToken) {
@@ -213,10 +221,20 @@ export function handleCallback() {
     window.history.replaceState({}, '', url);
 
     console.log('✅ Callback processed successfully, token stored');
+    emitAuthDiagnostic('CALLBACK_COMPLETED', 'SUCCESS', 'NONE', {
+      clientKey: getConfig().clientKey,
+      state: params.get('state'),
+    });
     return accessToken;
   }
 
-  throw new Error('No access token found in callback URL');
+  emitAuthDiagnostic('CALLBACK_REJECTED', 'FAILURE', 'ACCESS_TOKEN_MISSING', {
+    clientKey: getConfig().clientKey,
+    state: params.get('state'),
+  });
+  const missingTokenError = new Error('No access token found in callback URL');
+  missingTokenError.code = 'ACCESS_TOKEN_MISSING';
+  throw missingTokenError;
 }
 
 export function resetCallbackState() {
@@ -253,6 +271,7 @@ export async function refreshToken() {
         method: 'POST',
         credentials: 'include', // ✅ Include httpOnly cookies (for HTTPS)
         headers: {
+          ...diagnosticHeaders(),
           'Content-Type': 'application/json'
         }
       };
@@ -268,8 +287,16 @@ export async function refreshToken() {
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('❌ Token refresh failed:', response.status, errorText);
-        throw new Error(`Refresh failed: ${response.status}`);
+        let serverCode = null;
+        try { serverCode = JSON.parse(errorText)?.error || JSON.parse(errorText)?.code; } catch {}
+        emitAuthDiagnostic('TOKEN_REFRESH_REJECTED', 'FAILURE', serverCode || `HTTP_${response.status}`, {
+          clientKey,
+          status: response.status,
+        });
+        const refreshError = new Error(`Refresh failed: ${response.status}`);
+        refreshError.code = serverCode || `HTTP_${response.status}`;
+        refreshError.status = response.status;
+        throw refreshError;
       }
 
       const data = await response.json();
@@ -289,6 +316,7 @@ export async function refreshToken() {
       }
 
       console.log('✅ Token refresh successful, listeners notified');
+      emitAuthDiagnostic('TOKEN_REFRESH_COMPLETED', 'SUCCESS', 'NONE', { clientKey });
       return access_token;
     } catch (err) {
       console.error('❌ Token refresh error:', err);
@@ -325,6 +353,7 @@ export async function validateCurrentSession() {
     const response = await fetch(`${authBaseUrl}/account/validate-session`, {
       method: 'GET',
       headers: {
+        ...diagnosticHeaders(),
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json'
       },

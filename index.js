@@ -32,6 +32,7 @@ import {
   willExpireSoon
 } from './token';
 import api from './api';
+import { emitAuthDiagnostic, getDiagnosticContext } from './diagnostics';
 import { decodeToken, isTokenExpired, isAuthenticated } from './utils/jwt';
 
 export const auth = {
@@ -63,6 +64,10 @@ export const auth = {
 
   // 🌐 Authenticated API client
   api,
+
+  // 🔎 Safe authentication diagnostics
+  getDiagnosticContext,
+  emitAuthDiagnostic,
 
   // 🧪 Utilities
   decodeToken,
