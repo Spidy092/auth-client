@@ -1,9 +1,9 @@
 // auth-client/api.js
 import axios from 'axios';
-import { getConfig } from './config';
-import { getToken, setToken, clearToken } from './token';
-import { refreshToken as performRefresh } from './core';
-import { diagnosticHeaders, emitAuthDiagnostic } from './diagnostics';
+import { getConfig } from './config.js';
+import { getToken, setToken, clearToken } from './token.js';
+import { refreshToken as performRefresh } from './core.js';
+import { diagnosticHeaders, emitAuthDiagnostic } from './diagnostics.js';
 
 const api = axios.create({
   withCredentials: true,

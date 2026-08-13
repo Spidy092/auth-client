@@ -92,7 +92,8 @@ export function AuthProvider({ children, onSessionExpired }) {
         if (!res.ok) throw new Error('Failed to fetch user');
         return res.json();
       })
-      .then(userData => {
+      .then(responseBody => {
+        const userData = responseBody?.data ?? responseBody;
         console.log('✅ Profile fetched successfully:', userData.email);
         setUser(userData);
         setSessionValid(true);

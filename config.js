@@ -1,5 +1,5 @@
 // auth-client/config.js
-import { enableRefreshTokenPersistence } from './token';
+import { enableRefreshTokenPersistence } from './token.js';
 
 // ========== SESSION SECURITY CONFIGURATION ==========
 // These settings control how the auth-client handles token refresh and session validation
@@ -55,9 +55,9 @@ export function setConfig(customConfig = {}) {
     isRouter: customConfig.isRouter || customConfig.clientKey === 'account-ui'
   };
 
-  // ✅ Wire persistRefreshToken to token.js
+  // Keep token storage synchronized when consumers reconfigure the singleton.
+  enableRefreshTokenPersistence(config.persistRefreshToken);
   if (config.persistRefreshToken) {
-    enableRefreshTokenPersistence(true);
     console.log('📦 Refresh token persistence ENABLED (localStorage on HTTPS)');
   }
 

@@ -7,7 +7,9 @@ export default defineConfig({
         'utils/jwt.js',
         'react/AuthProvider.jsx',
         'react/useAuth.js',
-        'react/useSessionMonitor.js'
+        'react/useSessionMonitor.js',
+        'preferences.js',
+        'react/PreferencesProvider.jsx'
     ],
     format: ['cjs', 'esm'],
     dts: false, // Javascript project, no d.ts needed unless we add typescript

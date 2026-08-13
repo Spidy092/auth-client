@@ -8,8 +8,8 @@ import {
   getRefreshToken,
   clearRefreshToken,
   getTimeUntilExpiry,
-} from './token';
-import { getConfig, isRouterMode } from './config';
+} from './token.js';
+import { getConfig, isRouterMode } from './config.js';
 import {
   acquireLoginLock,
   clearLoginLock,
@@ -17,7 +17,7 @@ import {
   emitAuthDiagnostic,
   getDiagnosticContext,
   resetDiagnosticContext,
-} from './diagnostics';
+} from './diagnostics.js';
 
 let callbackProcessed = false;
 

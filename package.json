@@ -1,6 +1,6 @@
 {
   "name": "@spidy092/auth-client",
-  "version": "3.0.9",
+  "version": "3.1.0",
   "description": "Scalable frontend auth SDK for centralized login using Keycloak + Auth Service.",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -25,6 +25,14 @@
     "./api": {
       "import": "./dist/api.js",
       "require": "./dist/api.cjs"
+    },
+    "./preferences": {
+      "import": "./dist/preferences.js",
+      "require": "./dist/preferences.cjs"
+    },
+    "./react/PreferencesProvider": {
+      "import": "./dist/react/PreferencesProvider.js",
+      "require": "./dist/react/PreferencesProvider.cjs"
     },
     "./utils/jwt": {
       "import": "./dist/utils/jwt.js",

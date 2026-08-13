@@ -34,6 +34,7 @@ import {
 import api from './api';
 import { emitAuthDiagnostic, getDiagnosticContext } from './diagnostics';
 import { decodeToken, isTokenExpired, isAuthenticated } from './utils/jwt';
+import { preferences } from './preferences';
 
 export const auth = {
   // 🔧 Config
@@ -64,6 +65,7 @@ export const auth = {
 
   // 🌐 Authenticated API client
   api,
+  preferences,
 
   // 🔎 Safe authentication diagnostics
   getDiagnosticContext,
@@ -110,3 +112,17 @@ export const auth = {
 export { AuthProvider } from './react/AuthProvider';
 export { useAuth } from './react/useAuth';
 export { useSessionMonitor } from './react/useSessionMonitor';
+export { PreferencesProvider, usePreferences } from './react/PreferencesProvider';
+export {
+  PREFERENCE_DEFAULTS,
+  applyPreferences,
+  formatUserDate,
+  formatUserNumber,
+  formatUserRelativeTime,
+  getPreferences,
+  normalizePreferences,
+  resolveTheme,
+  startPreferenceSync,
+  subscribePreferences,
+  updatePreferences,
+} from './preferences';
