@@ -4,8 +4,8 @@ import {
   setToken,
   clearToken,
   getToken,
-  setRefreshToken,
   getRefreshToken,
+  setRefreshToken,
   clearRefreshToken,
   getTimeUntilExpiry,
 } from './token.js';
@@ -102,6 +102,7 @@ export async function logout(options = {}) {
     clientKey,
     scope,
   });
+  emitAuthDiagnostic('LOGOUT_INITIATED', 'PENDING', 'NONE', { clientKey });
 
   clearToken();
   clearRefreshToken();
@@ -131,18 +132,25 @@ export async function logout(options = {}) {
 
     const data = await response.json();
     console.log('✅ Logout response:', data);
-
-    if (data?.logoutRedirectUrl) {
-      window.location.replace(data.logoutRedirectUrl);
-      return;
-    }
+    emitAuthDiagnostic('LOGOUT_COMPLETED', 'SUCCESS', 'NONE', {
+      clientKey,
+      status: response.status,
+    });
 
     if (data?.keycloakLogoutUrl) {
       window.location.replace(data.keycloakLogoutUrl);
       return;
     }
+
+    if (data?.logoutRedirectUrl) {
+      window.location.replace(data.logoutRedirectUrl);
+      return;
+    }
   } catch (error) {
     console.warn('⚠️ Logout backend call failed:', error);
+    emitAuthDiagnostic('LOGOUT_BACKEND_FAILED', 'FAILURE', 'LOGOUT_REQUEST_FAILED', {
+      clientKey,
+    });
   }
 
   // Fallback only if the backend call failed or returned no logout URL —
@@ -197,19 +205,15 @@ export function handleCallback() {
   if (accessToken) {
     setToken(accessToken);
 
-    // ✅ Store refresh token from URL when persistence is enabled OR in HTTP dev mode
-    // When persistRefreshToken is true, we always store it (needed for local HTTPS with mkcert)
-    // When false, only store on HTTP (HTTPS relies on httpOnly cookies from server)
+    // Refresh tokens must never be accepted from a callback URL. The auth
+    // service transports them through the httpOnly client cookie; accepting a
+    // URL value would put a credential in browser history, referrers, and
+    // diagnostics. Keep deleting the legacy parameter below for clean URLs.
     const refreshTokenInUrl = params.get('refresh_token');
     if (refreshTokenInUrl) {
-      const { persistRefreshToken } = getConfig();
-      const isHttpDev = typeof window !== 'undefined' && window.location?.protocol === 'http:';
-      if (persistRefreshToken || isHttpDev) {
-        console.log(`📦 Storing refresh token from callback URL (${persistRefreshToken ? 'persistence enabled' : 'HTTP dev mode'})`);
-        setRefreshToken(refreshTokenInUrl);
-      } else {
-        console.log('🔒 HTTPS mode: Refresh token is in httpOnly cookie (ignoring URL param)');
-      }
+      emitAuthDiagnostic('CALLBACK_REFRESH_TOKEN_IGNORED', 'WARNING', 'REFRESH_TOKEN_IN_URL', {
+        clientKey: getConfig().clientKey,
+      });
     }
 
     const url = new URL(window.location);
