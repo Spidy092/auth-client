@@ -60,6 +60,11 @@ function resetBrowser(url = 'https://app.example/') {
   location.replaced = null;
   core.resetCallbackState();
   globalThis.fetch = undefined;
+  Object.defineProperty(globalThis, 'navigator', {
+    value: undefined,
+    writable: true,
+    configurable: true,
+  });
 }
 
 function configure(overrides = {}) {
@@ -109,6 +114,16 @@ test('router-mode login redirects directly to the auth service with correlation 
   assert.equal(redirect.pathname, '/auth/login/account-ui');
   assert.equal(redirect.searchParams.get('redirect_uri'), 'https://app.example/callback');
   assert.match(redirect.searchParams.get('correlation_id'), /^[A-Za-z0-9-]+$/);
+});
+
+test('explicit account switch requests a fresh Keycloak credential prompt', () => {
+  resetBrowser();
+  configure();
+
+  core.login('pms', 'https://app.example/callback', { switchAccount: true });
+
+  const redirect = new URL(location.href);
+  assert.equal(redirect.searchParams.get('switch_account'), 'true');
 });
 
 test('callback stores only the access token, removes URL credentials, and ignores refresh_token', () => {
@@ -175,6 +190,63 @@ test('concurrent refresh calls share one in-flight request', async () => {
 
   assert.deepEqual(await Promise.all([first, second]), ['access-concurrent', 'access-concurrent']);
   assert.equal(requestCount, 1);
+});
+
+test('cross-tab refresh lock reuses a token rotated by another tab', async () => {
+  resetBrowser('https://app.example/');
+  configure();
+  token.setToken('access-before');
+
+  let lockCalls = 0;
+  let networkCalls = 0;
+  Object.defineProperty(globalThis, 'navigator', {
+    value: {
+    locks: {
+      request: async (name, callback) => {
+        lockCalls += 1;
+        assert.equal(name, 'auth-refresh-pms');
+        storage.local.setItem('authToken', 'access-from-other-tab');
+        return callback();
+      },
+    },
+    },
+    writable: true,
+    configurable: true,
+  });
+  globalThis.fetch = async () => {
+    networkCalls += 1;
+    return response({ access_token: 'unexpected-network-token' });
+  };
+
+  const refreshed = await core.refreshToken();
+
+  assert.equal(refreshed, 'access-from-other-tab');
+  assert.equal(token.getToken(), 'access-from-other-tab');
+  assert.equal(lockCalls, 1);
+  assert.equal(networkCalls, 0);
+});
+
+test('cross-tab lock never reuses stale storage when no current session exists', async () => {
+  resetBrowser('https://app.example/');
+  configure();
+  token.clearToken();
+  storage.local.setItem('authToken', 'stale-user-token');
+
+  Object.defineProperty(globalThis, 'navigator', {
+    value: {
+      locks: {
+        request: async (_name, callback) => callback(),
+      },
+    },
+    writable: true,
+    configurable: true,
+  });
+  globalThis.fetch = async () => response({ access_token: 'fresh-user-token' });
+
+  const refreshed = await core.refreshToken();
+
+  assert.equal(refreshed, 'fresh-user-token');
+  assert.equal(token.getToken(), 'fresh-user-token');
 });
 
 test('refresh clears credentials only for an authentication rejection', async () => {

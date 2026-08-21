@@ -21,7 +21,7 @@ import {
 
 let callbackProcessed = false;
 
-export function login(clientKeyArg, redirectUriArg) {
+export function login(clientKeyArg, redirectUriArg, options = {}) {
   // ✅ Reset callback state when starting new login
   resetCallbackState();
 
@@ -52,21 +52,22 @@ export function login(clientKeyArg, redirectUriArg) {
 
   if (isRouterMode()) {
     // Router mode: Direct backend authentication
-    return routerLogin(clientKey, redirectUri);
+    return routerLogin(clientKey, redirectUri, options);
   } else {
     // Client mode: Redirect to centralized login
-    return clientLogin(clientKey, redirectUri);
+    return clientLogin(clientKey, redirectUri, options);
   }
 }
 
 // ✅ Router mode: Direct backend call
-function routerLogin(clientKey, redirectUri) {
+function routerLogin(clientKey, redirectUri, options = {}) {
   const { authBaseUrl } = getConfig();
 
   const params = new URLSearchParams();
   if (redirectUri) {
     params.append('redirect_uri', redirectUri);
   }
+  if (options.switchAccount || options.switch_account) params.append('switch_account', 'true');
   params.append('correlation_id', getDiagnosticContext().correlationId);
   const query = params.toString();
   const backendLoginUrl = `${authBaseUrl}/login/${clientKey}${query ? `?${query}` : ''}`;
@@ -75,7 +76,7 @@ function routerLogin(clientKey, redirectUri) {
 }
 
 // ✅ Client mode: Centralized login
-function clientLogin(clientKey, redirectUri) {
+function clientLogin(clientKey, redirectUri, options = {}) {
   const { accountUiUrl } = getConfig();
 
   const params = new URLSearchParams({
@@ -84,6 +85,7 @@ function clientLogin(clientKey, redirectUri) {
   if (redirectUri) {
     params.append('redirect_uri', redirectUri);
   }
+  if (options.switchAccount || options.switch_account) params.append('switch_account', 'true');
   const centralizedLoginUrl = `${accountUiUrl}/login?${params.toString()}`;
 
   window.location.href = centralizedLoginUrl;
@@ -249,6 +251,39 @@ export function resetCallbackState() {
 let refreshInProgress = false;
 let refreshPromise = null;
 
+// Coordinate refreshes across tabs of the same application. The in-memory
+// promise above protects one tab; navigator.locks protects multiple tabs on
+// the same origin. Auth-service still remains the final authority and its
+// replay grace handles browsers that do not implement Web Locks.
+async function withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshRequest) {
+  const lockName = `auth-refresh-${clientKey}`;
+  const run = async () => {
+    // Another tab may have completed the rotation while this tab was waiting
+    // for the lock. Reuse its access token instead of submitting the consumed
+    // refresh cookie a second time.
+    try {
+      const persistedToken = localStorage.getItem('authToken');
+      if (tokenBeforeRefresh && persistedToken && persistedToken !== tokenBeforeRefresh) {
+        setToken(persistedToken);
+        emitAuthDiagnostic('TOKEN_REFRESH_REUSED_CROSS_TAB', 'SUCCESS', 'CROSS_TAB_ROTATION', {
+          clientKey,
+        });
+        return persistedToken;
+      }
+    } catch {
+      // Storage can be unavailable in privacy-restricted browser contexts.
+    }
+
+    return refreshRequest();
+  };
+
+  if (typeof navigator !== 'undefined' && navigator.locks?.request) {
+    return navigator.locks.request(lockName, run);
+  }
+
+  return run();
+}
+
 export async function refreshToken() {
   const { clientKey, authBaseUrl } = getConfig();
 
@@ -260,87 +295,92 @@ export async function refreshToken() {
 
   refreshInProgress = true;
   refreshPromise = (async () => {
-    try {
-      // Get stored refresh token (for HTTP development)
-      const storedRefreshToken = getRefreshToken();
+    const tokenBeforeRefresh = getToken();
+    const refreshRequest = async () => {
+      try {
+        // Get stored refresh token (for HTTP development)
+        const storedRefreshToken = getRefreshToken();
 
-      console.log('🔄 Refreshing token:', {
-        clientKey,
-        mode: isRouterMode() ? 'ROUTER' : 'CLIENT',
-        hasStoredRefreshToken: !!storedRefreshToken
-      });
-
-      // Build request options - send refresh token in body and header for HTTP dev
-      const requestOptions = {
-        method: 'POST',
-        credentials: 'include', // ✅ Include httpOnly cookies (for HTTPS)
-        headers: {
-          ...diagnosticHeaders(),
-          'Content-Type': 'application/json'
-        }
-      };
-
-      // For HTTP development, send refresh token in body ONLY (header removed per user request)
-      if (storedRefreshToken) {
-        // requestOptions.headers['X-Refresh-Token'] = storedRefreshToken;
-        requestOptions.body = JSON.stringify({ refreshToken: storedRefreshToken });
-        console.log('📦 Sending refresh token in body only (Header skipped) v3.0.2');
-      }
-
-      const response = await fetch(`${authBaseUrl}/refresh/${clientKey}`, requestOptions);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        let serverCode = null;
-        try { serverCode = JSON.parse(errorText)?.error || JSON.parse(errorText)?.code; } catch {}
-        emitAuthDiagnostic('TOKEN_REFRESH_REJECTED', 'FAILURE', serverCode || `HTTP_${response.status}`, {
+        console.log('🔄 Refreshing token:', {
           clientKey,
-          status: response.status,
+          mode: isRouterMode() ? 'ROUTER' : 'CLIENT',
+          hasStoredRefreshToken: !!storedRefreshToken
         });
-        const refreshError = new Error(`Refresh failed: ${response.status}`);
-        refreshError.code = serverCode || `HTTP_${response.status}`;
-        refreshError.status = response.status;
-        throw refreshError;
+
+        // Build request options - send refresh token in body and header for HTTP dev
+        const requestOptions = {
+          method: 'POST',
+          credentials: 'include', // ✅ Include httpOnly cookies (for HTTPS)
+          headers: {
+            ...diagnosticHeaders(),
+            'Content-Type': 'application/json'
+          }
+        };
+
+        // For HTTP development, send refresh token in body ONLY (header removed per user request)
+        if (storedRefreshToken) {
+          // requestOptions.headers['X-Refresh-Token'] = storedRefreshToken;
+          requestOptions.body = JSON.stringify({ refreshToken: storedRefreshToken });
+          console.log('📦 Sending refresh token in body only (Header skipped) v3.0.2');
+        }
+
+        const response = await fetch(`${authBaseUrl}/refresh/${clientKey}`, requestOptions);
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          let serverCode = null;
+          try { serverCode = JSON.parse(errorText)?.error || JSON.parse(errorText)?.code; } catch {}
+          emitAuthDiagnostic('TOKEN_REFRESH_REJECTED', 'FAILURE', serverCode || `HTTP_${response.status}`, {
+            clientKey,
+            status: response.status,
+          });
+          const refreshError = new Error(`Refresh failed: ${response.status}`);
+          refreshError.code = serverCode || `HTTP_${response.status}`;
+          refreshError.status = response.status;
+          throw refreshError;
+        }
+
+        const data = await response.json();
+        const { access_token, refresh_token: new_refresh_token } = data;
+
+        if (!access_token) {
+          throw new Error('No access token in refresh response');
+        }
+
+        // ✅ This will trigger token listeners
+        setToken(access_token);
+
+        // ✅ Store new refresh token if provided (token rotation)
+        if (new_refresh_token) {
+          setRefreshToken(new_refresh_token);
+          console.log('🔄 New refresh token stored from rotation');
+        }
+
+        console.log('✅ Token refresh successful, listeners notified');
+        emitAuthDiagnostic('TOKEN_REFRESH_COMPLETED', 'SUCCESS', 'NONE', { clientKey });
+        return access_token;
+      } catch (err) {
+        console.error('❌ Token refresh error:', err);
+        // Only clear tokens on definitive auth failure (server explicitly rejected).
+        // Network errors / timeouts should NOT clear tokens — the session may still
+        // be valid and the next attempt may succeed.
+        const isAuthRejection = err.message?.includes('401') ||
+          err.message?.includes('403') ||
+          err.message?.includes('invalid_grant') ||
+          err.message?.includes('Refresh failed: 4');
+        if (isAuthRejection) {
+          clearToken();
+          clearRefreshToken();
+        }
+        throw err;
       }
+    };
 
-      const data = await response.json();
-      const { access_token, refresh_token: new_refresh_token } = data;
-
-      if (!access_token) {
-        throw new Error('No access token in refresh response');
-      }
-
-      // ✅ This will trigger token listeners
-      setToken(access_token);
-
-      // ✅ Store new refresh token if provided (token rotation)
-      if (new_refresh_token) {
-        setRefreshToken(new_refresh_token);
-        console.log('🔄 New refresh token stored from rotation');
-      }
-
-      console.log('✅ Token refresh successful, listeners notified');
-      emitAuthDiagnostic('TOKEN_REFRESH_COMPLETED', 'SUCCESS', 'NONE', { clientKey });
-      return access_token;
-    } catch (err) {
-      console.error('❌ Token refresh error:', err);
-      // Only clear tokens on definitive auth failure (server explicitly rejected).
-      // Network errors / timeouts should NOT clear tokens — the session may still
-      // be valid and the next attempt may succeed.
-      const isAuthRejection = err.message?.includes('401') ||
-        err.message?.includes('403') ||
-        err.message?.includes('invalid_grant') ||
-        err.message?.includes('Refresh failed: 4');
-      if (isAuthRejection) {
-        clearToken();
-        clearRefreshToken();
-      }
-      throw err;
-    } finally {
-      refreshInProgress = false;
-      refreshPromise = null;
-    }
-  })();
+    return withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshRequest);
+  })().finally(() => {
+    refreshInProgress = false;
+    refreshPromise = null;
+  });
 
   return refreshPromise;
 }

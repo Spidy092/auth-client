@@ -42,6 +42,50 @@ let config = {
   persistRefreshToken: false,
 };
 
+const RUNTIME_POLICY_DEFAULTS = {
+  tokenRefreshBuffer: 60,
+  sessionValidationInterval: 15 * 60 * 1000,
+  enableSessionValidation: true,
+  enableProactiveRefresh: true,
+  validateOnVisibility: true,
+};
+
+function validateRuntimePolicy(policy = {}) {
+  const numberInRange = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
+  const result = { ...RUNTIME_POLICY_DEFAULTS };
+  if (numberInRange(policy.tokenRefreshBuffer, 10, 300)) result.tokenRefreshBuffer = policy.tokenRefreshBuffer;
+  if (numberInRange(policy.sessionValidationInterval, 60000, 86400000)) result.sessionValidationInterval = policy.sessionValidationInterval;
+  for (const key of ['enableSessionValidation', 'enableProactiveRefresh', 'validateOnVisibility']) {
+    if (typeof policy[key] === 'boolean') result[key] = policy[key];
+  }
+  return result;
+}
+
+export function applyRuntimePolicy(policy = {}) {
+  config = { ...config, ...validateRuntimePolicy(policy) };
+  return getConfig();
+}
+
+export async function loadRuntimePolicy() {
+  const { authBaseUrl, clientKey } = config;
+  if (!authBaseUrl || !clientKey || typeof fetch !== 'function') return getConfig();
+  try {
+    const response = await fetch(`${authBaseUrl.replace(/\/+$/, '')}/clients/${encodeURIComponent(clientKey)}/config`, {
+      method: 'GET',
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) throw new Error(`runtime policy HTTP ${response.status}`);
+    const payload = await response.json();
+    return applyRuntimePolicy(payload.authentication_policy || {});
+  } catch (error) {
+    // Runtime config is an enhancement. Safe bounded defaults keep login
+    // available during a control-plane outage.
+    console.warn('[auth-client] Runtime policy unavailable; using safe defaults', error.message);
+    return applyRuntimePolicy({});
+  }
+}
+
 export function setConfig(customConfig = {}) {
   if (!customConfig.clientKey || !customConfig.authBaseUrl) {
     throw new Error('Missing required config: clientKey and authBaseUrl are required');

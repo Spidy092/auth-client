@@ -1,5 +1,5 @@
 // auth-client/index.js
-import { setConfig, getConfig, isRouterMode } from './config';
+import { setConfig, getConfig, isRouterMode, applyRuntimePolicy, loadRuntimePolicy } from './config';
 import {
   login,
   logout,
@@ -39,6 +39,8 @@ import { preferences } from './preferences';
 export const auth = {
   // 🔧 Config
   setConfig,
+  applyRuntimePolicy,
+  loadRuntimePolicy,
   getConfig,
   isRouterMode,
 
