@@ -1,3 +1,6 @@
+import { getConfig } from './config.js';
+import { getToken } from './token.js';
+
 const STORAGE_KEY = 'auth_diagnostic_context';
 const LOGIN_LOCK_KEY = 'auth_login_lock';
 
@@ -50,6 +53,36 @@ export function clearLoginLock() {
   try { sessionStorage.removeItem(LOGIN_LOCK_KEY); } catch {}
 }
 
+// Send only failure/warning diagnostics to the auth service. Successful
+// refreshes and callbacks are already recorded server-side; browser failures
+// are the missing half needed to explain a PMS-only redirect. This is
+// best-effort and never blocks an authentication flow.
+async function reportClientDiagnostic(safe) {
+  if (typeof fetch !== 'function' || typeof getToken !== 'function') return;
+  if (safe.outcome === 'SUCCESS' && !safe.event.startsWith('PROFILE_') && !safe.event.startsWith('SESSION_')) return;
+
+  const { authBaseUrl } = getConfig();
+  const token = getToken();
+  if (!authBaseUrl || !token) return;
+
+  try {
+    await fetch(`${authBaseUrl.replace(/\/+$/, '')}/client-telemetry`, {
+      method: 'POST',
+      credentials: 'include',
+      keepalive: true,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'X-Correlation-ID': safe.correlationId,
+        'X-Request-ID': safe.correlationId,
+      },
+      body: JSON.stringify(safe),
+    });
+  } catch {
+    // Diagnostic reporting must never affect login, refresh, or logout.
+  }
+}
+
 export async function emitAuthDiagnostic(event, outcome, reasonCode, details = {}) {
   const context = getDiagnosticContext();
   const safe = {
@@ -66,5 +99,6 @@ export async function emitAuthDiagnostic(event, outcome, reasonCode, details = {
   };
   const method = outcome === 'FAILURE' ? 'error' : outcome === 'WARNING' ? 'warn' : 'info';
   console[method]('[auth-client]', safe);
+  void reportClientDiagnostic(safe);
   return safe;
 }
