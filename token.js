@@ -3,9 +3,11 @@
 import { jwtDecode } from 'jwt-decode';
 
 let accessToken = null;
+let idToken = null;
 const listeners = new Set();
 
 const REFRESH_COOKIE = 'account_refresh_token';
+const ID_TOKEN_KEY = 'auth_id_token';
 const COOKIE_MAX_AGE = 7 * 24 * 60 * 60;
 
 function secureAttribute() {
@@ -151,6 +153,7 @@ export function getToken() {
 export function clearToken() {
   if (!accessToken) {
     writeAccessToken(null);
+    clearIdToken();
     clearRefreshToken();
     return;
   }
@@ -158,6 +161,7 @@ export function clearToken() {
   const previousToken = accessToken;
   accessToken = null;
   writeAccessToken(null);
+  clearIdToken();
   clearRefreshToken();
 
   listeners.forEach((listener) => {
@@ -167,6 +171,38 @@ export function clearToken() {
       console.warn('Token listener error:', err);
     }
   });
+}
+
+// ID tokens are retained only for the current browser tab. They are needed as
+// the OIDC logout hint, but must not be placed in localStorage or sent to
+// application APIs like access tokens are.
+export function setIdToken(token) {
+  idToken = token || null;
+  try {
+    if (idToken) sessionStorage.setItem(ID_TOKEN_KEY, idToken);
+    else sessionStorage.removeItem(ID_TOKEN_KEY);
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+}
+
+export function getIdToken() {
+  if (idToken) return idToken;
+  try {
+    idToken = sessionStorage.getItem(ID_TOKEN_KEY) || null;
+  } catch {
+    idToken = null;
+  }
+  return idToken;
+}
+
+export function clearIdToken() {
+  idToken = null;
+  try {
+    sessionStorage.removeItem(ID_TOKEN_KEY);
+  } catch {
+    // Ignore storage cleanup failures.
+  }
 }
 
 // ========== REFRESH TOKEN STORAGE ==========
@@ -298,5 +334,3 @@ export function isAuthenticated() {
   const token = getToken();
   return !!token && !isExpired(token, 10);
 }
-
-

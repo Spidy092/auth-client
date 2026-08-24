@@ -3,6 +3,9 @@
 import {
   setToken,
   clearToken,
+  getIdToken,
+  setIdToken,
+  clearIdToken,
   getToken,
   getRefreshToken,
   setRefreshToken,
@@ -97,6 +100,7 @@ export async function logout(options = {}) {
   const { clientKey, authBaseUrl, accountUiUrl } = getConfig();
   const scope = options.scope === 'client' ? 'client' : 'sso';
   const token = getToken();
+  const idToken = getIdToken();
   const refreshToken = getRefreshToken();
 
   console.log('🚪 Smart Logout initiated', {
@@ -107,6 +111,7 @@ export async function logout(options = {}) {
   emitAuthDiagnostic('LOGOUT_INITIATED', 'PENDING', 'NONE', { clientKey });
 
   clearToken();
+  clearIdToken();
   clearRefreshToken();
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
@@ -125,7 +130,7 @@ export async function logout(options = {}) {
         'Authorization': token ? `Bearer ${token}` : '',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ refreshToken, scope })
+      body: JSON.stringify({ refreshToken, idToken, scope })
     });
 
     if (!response.ok) {
@@ -169,10 +174,12 @@ export async function logout(options = {}) {
 export function handleCallback() {
   const params = new URLSearchParams(window.location.search);
   const accessToken = params.get('access_token');
+  const idToken = params.get('id_token');
   const error = params.get('error');
 
   console.log('🔄 Callback handling:', {
     hasAccessToken: !!accessToken,
+    hasIdToken: !!idToken,
     error
   });
 
@@ -206,6 +213,7 @@ export function handleCallback() {
 
   if (accessToken) {
     setToken(accessToken);
+    if (idToken) setIdToken(idToken);
 
     // Refresh tokens must never be accepted from a callback URL. The auth
     // service transports them through the httpOnly client cookie; accepting a
@@ -220,6 +228,7 @@ export function handleCallback() {
 
     const url = new URL(window.location);
     url.searchParams.delete('access_token');
+    url.searchParams.delete('id_token');
     url.searchParams.delete('refresh_token');
     url.searchParams.delete('state');
     url.searchParams.delete('error');
