@@ -139,6 +139,17 @@ test('callback stores only the access token, removes URL credentials, and ignore
   assert.equal(sessionStorage.getItem('originalApp'), null);
 });
 
+test('callback stores id_token in tab-scoped storage and removes it from the URL', () => {
+  resetBrowser('https://app.example/callback?access_token=access-1&id_token=id-token-1&state=state-1');
+  configure();
+
+  core.handleCallback();
+
+  assert.equal(token.getIdToken(), 'id-token-1');
+  assert.equal(sessionStorage.getItem('auth_id_token'), 'id-token-1');
+  assert.equal(location.search, '');
+});
+
 test('callback rejects provider errors with a stable error code', () => {
   resetBrowser('https://app.example/callback?error=access_denied&error_description=User%20cancelled');
   configure();
@@ -278,7 +289,7 @@ test('SSO logout revokes local state, sends scope, and follows Keycloak logout',
   assert.equal(request.url, 'https://auth.example/auth/logout/pms');
   assert.equal(request.options.credentials, 'include');
   assert.equal(request.options.headers.Authorization, 'Bearer access-logout');
-  assert.deepEqual(JSON.parse(request.options.body), { refreshToken: null, scope: 'sso' });
+  assert.deepEqual(JSON.parse(request.options.body), { idToken: null, refreshToken: null, scope: 'sso' });
   assert.equal(token.getToken(), null);
   assert.equal(location.replaced, 'https://keycloak.example/logout?sid=s-1');
 });
