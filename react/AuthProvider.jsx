@@ -22,6 +22,7 @@ export function AuthProvider({ children, onSessionExpired, manageSessionSecurity
   const onSessionExpiredRef = useRef(onSessionExpired);
   const recoveryInFlightRef = useRef(null);
   const profileRecoveryTokensRef = useRef(new Set());
+  const profileLoadedRef = useRef(false);
 
   useEffect(() => {
     onSessionExpiredRef.current = onSessionExpired;
@@ -37,8 +38,12 @@ export function AuthProvider({ children, onSessionExpired, manageSessionSecurity
       setTokenState(nextToken);
       if (nextToken) {
         setSessionValid(true);
-        setLoading(true);
+        // A rotated access token is background maintenance once the profile is
+        // already loaded. Keep the signed-in UI mounted while the profile is
+        // refreshed; only the first token/profile load should block rendering.
+        if (!profileLoadedRef.current) setLoading(true);
       } else {
+        profileLoadedRef.current = false;
         setSessionValid(false);
         setUser(null);
         setLoading(false);
@@ -52,6 +57,7 @@ export function AuthProvider({ children, onSessionExpired, manageSessionSecurity
     clearToken();
     setTokenState(null);
     setUser(null);
+    profileLoadedRef.current = false;
     setSessionValid(false);
     setLoading(false);
   };
@@ -71,7 +77,7 @@ export function AuthProvider({ children, onSessionExpired, manageSessionSecurity
           if (recoveredToken) {
             setTokenState(recoveredToken);
             setSessionValid(true);
-            setLoading(true);
+            if (!profileLoadedRef.current) setLoading(true);
             return true;
           }
         } catch (error) {
@@ -167,6 +173,7 @@ export function AuthProvider({ children, onSessionExpired, manageSessionSecurity
         const userData = responseBody?.data ?? responseBody;
         console.log('✅ Profile fetched successfully:', userData.email);
         setUser(userData);
+        profileLoadedRef.current = true;
         setSessionValid(true);
         setLoading(false);
       } catch (error) {
@@ -208,6 +215,7 @@ export function AuthProvider({ children, onSessionExpired, manageSessionSecurity
               if (cancelled) return;
               const userData = responseBody?.data ?? responseBody;
               setUser(userData);
+              profileLoadedRef.current = true;
               setSessionValid(true);
               setLoading(false);
               return;
@@ -262,7 +270,7 @@ export function AuthProvider({ children, onSessionExpired, manageSessionSecurity
       setToken(newToken);
       setTokenState(newToken);
       setSessionValid(true);
-      if (newToken) setLoading(true);
+      if (newToken && !profileLoadedRef.current) setLoading(true);
     },
     clearToken: () => {
       stopSessionSecurity();
@@ -270,6 +278,7 @@ export function AuthProvider({ children, onSessionExpired, manageSessionSecurity
       clearToken();
       setTokenState(null);
       setUser(null);
+      profileLoadedRef.current = false;
     },
   };
 
