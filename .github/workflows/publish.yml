@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   publish:
@@ -29,5 +28,11 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Publish package with npm provenance
-        run: npm publish --provenance --access public
+      # Token-based publish. Requires an npm Automation token stored as the
+      # NPM_TOKEN repository secret (Settings -> Secrets and variables ->
+      # Actions). This replaces trusted publishing, which requires a matching
+      # OIDC "trusted publisher" to be configured on npmjs.com for this package.
+      - name: Publish package
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
