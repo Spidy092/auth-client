@@ -34,7 +34,7 @@ import {
   getTimeUntilExpiry,
   willExpireSoon
 } from './token';
-import api from './api';
+import api, { SINGLE_ORG_DENIED_EVENT, isTenantAccessDenied, isSingleOrganizationMode } from './api';
 import { emitAuthDiagnostic, getDiagnosticContext } from './diagnostics';
 import { decodeToken, isTokenExpired, isAuthenticated } from './utils/jwt';
 import { preferences } from './preferences';
@@ -74,6 +74,11 @@ export const auth = {
   // 🌐 Authenticated API client
   api,
   preferences,
+
+  // 🏢 Single-organization mode helpers
+  SINGLE_ORG_DENIED_EVENT,
+  isTenantAccessDenied,
+  isSingleOrganizationMode,
 
   // 🔎 Safe authentication diagnostics
   getDiagnosticContext,
@@ -117,6 +122,7 @@ export const auth = {
   }
 };
 
+export { SINGLE_ORG_DENIED_EVENT, isTenantAccessDenied, isSingleOrganizationMode } from './api';
 export { AuthProvider } from './react/AuthProvider';
 export { useAuth } from './react/useAuth';
 export { useSessionMonitor } from './react/useSessionMonitor';
