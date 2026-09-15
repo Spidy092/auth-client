@@ -294,7 +294,22 @@ test('SSO logout revokes local state, sends scope, and follows Keycloak logout',
   assert.equal(location.replaced, 'https://keycloak.example/logout?sid=s-1');
 });
 
-test('client-only logout uses client scope and falls back when backend logout fails', async () => {
+test('SSO logout uses the auth-service front-channel fallback when the POST fails', async () => {
+  resetBrowser();
+  configure();
+  token.setToken('access-sso-logout');
+  globalThis.fetch = async () => { throw new Error('network down'); };
+
+  await core.logout();
+
+  assert.equal(token.getToken(), null);
+  const fallback = new URL(location.replaced);
+  assert.equal(fallback.origin, 'https://auth.example');
+  assert.equal(fallback.pathname, '/auth/logout/pms');
+  assert.equal(fallback.search, '');
+});
+
+test('client-only logout uses client scope and keeps its fallback local when backend logout fails', async () => {
   resetBrowser();
   configure();
   token.setToken('access-client-logout');

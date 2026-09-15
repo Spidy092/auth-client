@@ -160,8 +160,22 @@ export async function logout(options = {}) {
     });
   }
 
-  // Fallback only if the backend call failed or returned no logout URL —
-  // the Keycloak SSO session may still be alive in this case.
+  // The JSON request can fail after the browser has already cleared local
+  // state. For SSO logout, finish through the auth service's top-level GET
+  // endpoint rather than redirecting straight to an app login page; that
+  // endpoint performs RP-initiated Keycloak logout and clears the shared SSO
+  // browser session. Do not put an access token in the URL: the httpOnly
+  // refresh cookie is sent with this navigation when it is available.
+  if (scope === 'sso' && authBaseUrl && clientKey) {
+    const frontChannelLogoutUrl = new URL(
+      `${authBaseUrl.replace(/\/+$/, '')}/logout/${encodeURIComponent(clientKey)}`
+    );
+    window.location.replace(frontChannelLogoutUrl.toString());
+    return;
+  }
+
+  // A client-only logout intentionally preserves the shared Keycloak SSO
+  // session, so its fallback must stay local to the application.
   const fallbackUrl = isRouterMode()
     ? new URL('/login', window.location.origin)
     : new URL('/login', accountUiUrl);
