@@ -65,7 +65,16 @@ function resetBrowser(url = 'https://app.example/') {
     writable: true,
     configurable: true,
   });
+  broadcastMessages.length = 0;
+  globalThis.BroadcastChannel = class {
+    constructor(name) { this.name = name; }
+    postMessage(message) { broadcastMessages.push({ name: this.name, message }); }
+    close() {}
+  };
 }
+
+// Captures every message posted to any BroadcastChannel during a test.
+const broadcastMessages = [];
 
 function configure(overrides = {}) {
   setConfig({
@@ -323,4 +332,44 @@ test('client-only logout uses client scope and keeps its fallback local when bac
   assert.equal(fallback.pathname, '/login');
   assert.equal(fallback.searchParams.get('logged_out'), 'true');
   assert.equal(fallback.searchParams.get('scope'), 'client');
+});
+
+test('logout broadcasts a LOGOUT message to sibling tabs on the configured channel', async () => {
+  resetBrowser();
+  configure({ logoutChannelName: 'auth_platform_sso_channel' });
+  token.setToken('access-broadcast');
+  globalThis.fetch = async () => response({ keycloakLogoutUrl: 'https://keycloak.example/logout?sid=s-1' });
+
+  await core.logout();
+
+  const logoutMsg = broadcastMessages.find((m) => m.message?.type === 'LOGOUT');
+  assert.ok(logoutMsg, 'expected a LOGOUT broadcast');
+  assert.equal(logoutMsg.name, 'auth_platform_sso_channel');
+  assert.equal(logoutMsg.message.reason, 'user_logout');
+  assert.equal(logoutMsg.message.clientKey, 'pms');
+});
+
+test('logout still broadcasts even when the backend POST fails', async () => {
+  resetBrowser();
+  configure({ logoutChannelName: 'auth_platform_sso_channel' });
+  token.setToken('access-broadcast-2');
+  globalThis.fetch = async () => { throw new Error('network down'); };
+
+  await core.logout();
+
+  const logoutMsg = broadcastMessages.find((m) => m.message?.type === 'LOGOUT');
+  assert.ok(logoutMsg, 'expected a LOGOUT broadcast even on POST failure');
+  assert.equal(logoutMsg.name, 'auth_platform_sso_channel');
+});
+
+test('logout does not throw when BroadcastChannel is unavailable', async () => {
+  resetBrowser();
+  configure();
+  globalThis.BroadcastChannel = undefined;
+  token.setToken('access-no-bc');
+  globalThis.fetch = async () => response({ keycloakLogoutUrl: 'https://keycloak.example/logout?sid=s-1' });
+
+  await core.logout();
+
+  assert.equal(location.replaced, 'https://keycloak.example/logout?sid=s-1');
 });

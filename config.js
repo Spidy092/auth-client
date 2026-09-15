@@ -40,6 +40,14 @@ let config = {
   // may not work reliably across origins
   // ⚠️ In true production, set to false and rely on httpOnly cookies
   persistRefreshToken: false,
+
+  // ========== CROSS-TAB LOGOUT BROADCAST ==========
+  // Name of the BroadcastChannel the SDK posts a {type:'LOGOUT', reason}
+  // message on when logout() runs, so sibling tabs of the same app react
+  // immediately instead of waiting for a storage event or a validation poll.
+  // All company browser clients share one channel so the receiver wiring is
+  // identical everywhere. Apps may override per deployment.
+  logoutChannelName: 'auth_platform_sso_channel',
 };
 
 const RUNTIME_POLICY_DEFAULTS = {

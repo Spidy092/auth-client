@@ -24,6 +24,29 @@ import {
 
 let callbackProcessed = false;
 
+// Upper bound for the logout POST. A hung request aborts and falls through to
+// the front-channel (sso) or local (client) fallback, so logout never hangs.
+const LOGOUT_REQUEST_TIMEOUT_MS = 8000;
+
+// Post a same-origin cross-tab logout signal. Best-effort: never throws, so a
+// missing BroadcastChannel API or a closed channel can't block logout. The
+// message shape {type:'LOGOUT', reason} matches what consuming apps already
+// listen for; 'user_logout' marks an explicit user action so receivers can
+// land on a "signed out" page rather than a "session expired" one.
+function broadcastLogoutToTabs(clientKey, reason = 'user_logout') {
+  try {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const { logoutChannelName } = getConfig();
+    if (!logoutChannelName) return;
+    const channel = new BroadcastChannel(logoutChannelName);
+    channel.postMessage({ type: 'LOGOUT', reason, clientKey });
+    channel.close();
+  } catch (err) {
+    // Cross-tab notification is an enhancement, not a requirement for logout.
+    console.warn('⚠️ Cross-tab logout broadcast failed (non-fatal):', err?.message || err);
+  }
+}
+
 export function login(clientKeyArg, redirectUriArg, options = {}) {
   // ✅ Reset callback state when starting new login
   resetCallbackState();
@@ -116,12 +139,29 @@ export async function logout(options = {}) {
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
 
+  // Tell sibling tabs of this same-origin app to sign out too, natively via
+  // BroadcastChannel (the industry-standard multi-tab logout mechanism; see
+  // Auth0's SPA SDK). This fires before the network call so other tabs react
+  // immediately regardless of the POST outcome. It is best-effort: any failure
+  // (unsupported API, closed channel) must never block the logout itself. Note
+  // this is same-origin ONLY — cross-application logout is handled by the IdP
+  // (Keycloak back-channel logout), not by this channel.
+  broadcastLogoutToTabs(clientKey);
+
   // Every client — router or not — must hit the backend so it can:
   //  1. revoke the refresh token record, and
   //  2. hand back a Keycloak end-session URL so the IdP's SSO cookie is
   //     actually killed. Without step 2 the browser stays signed in at
   //     Keycloak and silently re-authenticates on the next login attempt.
   try {
+    // Bound the POST so a hung network (no response, no error) cannot leave a
+    // caller awaiting forever. On timeout the fetch rejects with an AbortError
+    // and we fall through to the front-channel/local fallback below, so logout
+    // always makes progress. AbortSignal.timeout is supported by every browser
+    // this SDK targets; guard for older/native runtimes just in case.
+    const logoutSignal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(LOGOUT_REQUEST_TIMEOUT_MS)
+      : undefined;
     const response = await fetch(`${authBaseUrl}/logout/${clientKey}`, {
       method: 'POST',
       credentials: 'include',
@@ -130,7 +170,8 @@ export async function logout(options = {}) {
         'Authorization': token ? `Bearer ${token}` : '',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ refreshToken, idToken, scope })
+      body: JSON.stringify({ refreshToken, idToken, scope }),
+      ...(logoutSignal ? { signal: logoutSignal } : {})
     });
 
     if (!response.ok) {
