@@ -6,6 +6,11 @@ import {
   handleCallback,
   refreshToken,
   restoreSession,
+  subscribeToAuthEvents,
+  publishAuthEvent,
+  acquireLoginLease,
+  clearLoginLease,
+  isLoginLeaseActive,
   resetCallbackState,
   validateCurrentSession,
   // Session Security Functions
@@ -56,6 +61,11 @@ export const auth = {
   handleCallback,
   refreshToken,
   restoreSession,
+  subscribeToAuthEvents,
+  publishAuthEvent,
+  acquireLoginLease,
+  clearLoginLease,
+  isLoginLeaseActive,
   resetCallbackState,
   validateCurrentSession,
 
@@ -124,6 +134,12 @@ export const auth = {
   }
 };
 
+export {
+  AUTH_EVENT_STORAGE_KEY,
+  AUTH_EVENT_TYPES,
+  LOGIN_LEASE_KEY,
+  LOGIN_LEASE_TTL_MS,
+} from './core';
 export { SINGLE_ORG_DENIED_EVENT, isTenantAccessDenied, isSingleOrganizationMode } from './api';
 export { AuthProvider } from './react/AuthProvider';
 export { useAuth } from './react/useAuth';

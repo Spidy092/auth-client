@@ -51,6 +51,22 @@ auth.handleCallback(); // Call this on /callback page
 auth.logout();
 ```
 
+### Cross-tab auth events
+```js
+const unsubscribe = auth.subscribeToAuthEvents((event) => {
+  if (event.type === 'LOGIN_COMPLETED') {
+    // Re-establish this tab's session with auth.restoreSession().
+  }
+});
+
+// Call when the component or application is disposed.
+unsubscribe();
+```
+
+Login start/completion and logout events use the configured `logoutChannelName`
+and carry metadata only. Applications must restore their own session; tokens
+are never sent through the cross-tab transport.
+
 ### Get Token
 ```js
 const token = auth.getToken();

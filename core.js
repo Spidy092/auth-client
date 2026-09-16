@@ -28,23 +28,182 @@ let callbackProcessed = false;
 // the front-channel (sso) or local (client) fallback, so logout never hangs.
 const LOGOUT_REQUEST_TIMEOUT_MS = 8000;
 
-// Post a same-origin cross-tab logout signal. Best-effort: never throws, so a
-// missing BroadcastChannel API or a closed channel can't block logout. The
-// message shape {type:'LOGOUT', reason} matches what consuming apps already
-// listen for; 'user_logout' marks an explicit user action so receivers can
-// land on a "signed out" page rather than a "session expired" one.
-function broadcastLogoutToTabs(clientKey, reason = 'user_logout') {
+// Same-origin auth events carry metadata only. Access tokens stay in memory;
+// receivers re-establish their own session through the HttpOnly refresh cookie.
+// BroadcastChannel is the primary transport and the storage key is only a
+// fallback for browsers without BroadcastChannel. Both routes share this
+// delivery/deduplication path so one event cannot be handled twice.
+const AUTH_EVENT_STORAGE_KEY = 'auth_platform_sso_event';
+const AUTH_EVENT_TYPES = new Set(['LOGIN_STARTED', 'LOGIN_COMPLETED', 'LOGOUT', 'SESSION_EXPIRED']);
+const LOGIN_LEASE_KEY = 'auth_platform_login_lease';
+const LOGIN_LEASE_TTL_MS = 5 * 60 * 1000;
+
+let authEventChannel = null;
+let authEventChannelName = null;
+let authEventStorageListenerInstalled = false;
+const authEventListeners = new Set();
+const seenAuthEventIds = new Set();
+
+function readAuthEvent(value) {
   try {
-    if (typeof BroadcastChannel === 'undefined') return;
-    const { logoutChannelName } = getConfig();
-    if (!logoutChannelName) return;
-    const channel = new BroadcastChannel(logoutChannelName);
-    channel.postMessage({ type: 'LOGOUT', reason, clientKey });
-    channel.close();
-  } catch (err) {
-    // Cross-tab notification is an enhancement, not a requirement for logout.
-    console.warn('⚠️ Cross-tab logout broadcast failed (non-fatal):', err?.message || err);
+    return JSON.parse(value || 'null');
+  } catch {
+    return null;
   }
+}
+
+function deliverAuthEvent(message) {
+  if (!message || typeof message.type !== 'string' || !AUTH_EVENT_TYPES.has(message.type)) return;
+
+  if (message.eventId) {
+    if (seenAuthEventIds.has(message.eventId)) return;
+    seenAuthEventIds.add(message.eventId);
+    if (seenAuthEventIds.size > 100) {
+      seenAuthEventIds.delete(seenAuthEventIds.values().next().value);
+    }
+  }
+
+  authEventListeners.forEach((listener) => {
+    try {
+      listener(message);
+    } catch (err) {
+      console.warn('Auth event listener error:', err);
+    }
+  });
+}
+
+function closeAuthEventTransport() {
+  if (authEventChannel) {
+    try { authEventChannel.close(); } catch {}
+    authEventChannel = null;
+    authEventChannelName = null;
+  }
+
+  if (authEventStorageListenerInstalled && typeof window !== 'undefined' && window.removeEventListener) {
+    window.removeEventListener('storage', handleAuthEventStorage);
+    authEventStorageListenerInstalled = false;
+  }
+}
+
+function getAuthEventChannel() {
+  const { logoutChannelName } = getConfig();
+  if (!logoutChannelName || typeof BroadcastChannel === 'undefined') return null;
+
+  if (authEventChannel && authEventChannelName !== logoutChannelName) {
+    closeAuthEventTransport();
+  }
+
+  if (!authEventChannel) {
+    try {
+      authEventChannel = new BroadcastChannel(logoutChannelName);
+      authEventChannelName = logoutChannelName;
+      authEventChannel.onmessage = (event) => deliverAuthEvent(event?.data);
+    } catch (err) {
+      authEventChannel = null;
+      authEventChannelName = null;
+      console.warn('Auth event channel unavailable:', err?.message || err);
+    }
+  }
+
+  return authEventChannel;
+}
+
+function handleAuthEventStorage(event) {
+  if (event?.key !== AUTH_EVENT_STORAGE_KEY || !event.newValue) return;
+  deliverAuthEvent(readAuthEvent(event.newValue));
+}
+
+function installAuthEventStorageListener() {
+  if (authEventStorageListenerInstalled || typeof window === 'undefined' || !window.addEventListener) return;
+  window.addEventListener('storage', handleAuthEventStorage);
+  authEventStorageListenerInstalled = true;
+}
+
+export function subscribeToAuthEvents(listener) {
+  if (typeof listener !== 'function') return () => {};
+
+  authEventListeners.add(listener);
+  getAuthEventChannel();
+  installAuthEventStorageListener();
+
+  return () => {
+    authEventListeners.delete(listener);
+    if (!authEventListeners.size) closeAuthEventTransport();
+  };
+}
+
+export function publishAuthEvent(type, payload = {}) {
+  if (!AUTH_EVENT_TYPES.has(type)) return;
+
+  const { clientKey: configuredClientKey } = getConfig();
+  const event = {
+    type,
+    clientKey: typeof payload.clientKey === 'string' ? payload.clientKey : configuredClientKey,
+    reason: typeof payload.reason === 'string' ? payload.reason : undefined,
+    eventId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    issuedAt: Date.now(),
+  };
+  const safeEvent = Object.fromEntries(Object.entries(event).filter(([, value]) => value !== undefined));
+  const channel = getAuthEventChannel();
+
+  try {
+    channel?.postMessage(safeEvent);
+  } catch (err) {
+    console.warn('Auth event broadcast failed (non-fatal):', err?.message || err);
+  } finally {
+    if (!authEventListeners.size && channel === authEventChannel) closeAuthEventTransport();
+  }
+
+  try {
+    localStorage.setItem(AUTH_EVENT_STORAGE_KEY, JSON.stringify(safeEvent));
+  } catch {
+    // BroadcastChannel may still be available when storage is blocked.
+  }
+}
+
+function readLoginLease() {
+  try {
+    const lease = readAuthEvent(localStorage.getItem(LOGIN_LEASE_KEY));
+    if (!lease?.createdAt || Date.now() - lease.createdAt >= LOGIN_LEASE_TTL_MS) return null;
+    return lease;
+  } catch {
+    return null;
+  }
+}
+
+export function isLoginLeaseActive() {
+  return Boolean(readLoginLease());
+}
+
+export function acquireLoginLease(clientKey) {
+  try {
+    if (readLoginLease()) return false;
+    const createdAt = Date.now();
+    const owner = `${createdAt}-${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem(LOGIN_LEASE_KEY, JSON.stringify({ clientKey, createdAt, owner }));
+    return readAuthEvent(localStorage.getItem(LOGIN_LEASE_KEY))?.owner === owner;
+  } catch {
+    // Storage restrictions must not prevent a user from authenticating.
+    return true;
+  }
+}
+
+export function clearLoginLease() {
+  try {
+    localStorage.removeItem(LOGIN_LEASE_KEY);
+  } catch {
+    // Ignore unavailable storage during callback/error cleanup.
+  }
+}
+
+export { AUTH_EVENT_STORAGE_KEY, AUTH_EVENT_TYPES, LOGIN_LEASE_KEY, LOGIN_LEASE_TTL_MS };
+
+// Post a same-origin cross-tab logout signal. Best-effort: never throws, so a
+// missing BroadcastChannel or a closed channel can't block logout. The event
+// shape matches what consuming apps already listen for; 'user_logout' marks an
+// explicit user action so receivers can show a signed-out boundary.
+function broadcastLogoutToTabs(clientKey, reason = 'user_logout') {
+  publishAuthEvent('LOGOUT', { clientKey, reason });
 }
 
 export function login(clientKeyArg, redirectUriArg, options = {}) {
@@ -70,8 +229,14 @@ export function login(clientKeyArg, redirectUriArg, options = {}) {
     emitAuthDiagnostic('LOGIN_DUPLICATE_SUPPRESSED', 'WARNING', 'LOGIN_ALREADY_IN_PROGRESS', { clientKey });
     return false;
   }
+  if (!acquireLoginLease(clientKey)) {
+    clearLoginLock();
+    emitAuthDiagnostic('LOGIN_DUPLICATE_SUPPRESSED', 'WARNING', 'LOGIN_ALREADY_IN_PROGRESS', { clientKey });
+    return false;
+  }
   resetDiagnosticContext();
   emitAuthDiagnostic('LOGIN_INITIATED', 'PENDING', 'NONE', { clientKey });
+  publishAuthEvent('LOGIN_STARTED', { clientKey });
 
   sessionStorage.setItem('originalApp', clientKey);
   sessionStorage.setItem('returnUrl', redirectUri);
@@ -136,6 +301,7 @@ export async function logout(options = {}) {
   clearToken();
   clearIdToken();
   clearRefreshToken();
+  clearLoginLease();
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
 
@@ -251,6 +417,7 @@ export function handleCallback() {
 
   callbackProcessed = true;
   clearLoginLock();
+  clearLoginLease();
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
 
@@ -295,6 +462,7 @@ export function handleCallback() {
       clientKey: getConfig().clientKey,
       state: params.get('state'),
     });
+    publishAuthEvent('LOGIN_COMPLETED', { clientKey: getConfig().clientKey });
     return accessToken;
   }
 
