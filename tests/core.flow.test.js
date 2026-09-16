@@ -27,6 +27,11 @@ const location = {
   toString() { return `${this.origin}${this.search}`; },
 };
 
+// Captures every message posted to any BroadcastChannel during a test.
+const broadcastMessages = [];
+const broadcastChannels = [];
+const storageListeners = new Set();
+
 globalThis.localStorage = storage.local;
 globalThis.sessionStorage = storage.session;
 globalThis.document = { cookie: '' };
@@ -41,6 +46,15 @@ globalThis.window = {
       location.protocol = parsed.protocol;
       location.search = parsed.search;
     },
+  },
+  addEventListener(type, listener) {
+    if (type === 'storage') storageListeners.add(listener);
+  },
+  removeEventListener(type, listener) {
+    if (type === 'storage') storageListeners.delete(listener);
+  },
+  dispatchEvent(event) {
+    if (event?.type === 'storage') storageListeners.forEach((listener) => listener(event));
   },
 };
 
@@ -70,15 +84,17 @@ function resetBrowser(url = 'https://app.example/') {
     configurable: true,
   });
   broadcastMessages.length = 0;
+  broadcastChannels.length = 0;
   globalThis.BroadcastChannel = class {
-    constructor(name) { this.name = name; }
+    constructor(name) {
+      this.name = name;
+      this.onmessage = null;
+      broadcastChannels.push(this);
+    }
     postMessage(message) { broadcastMessages.push({ name: this.name, message }); }
     close() {}
   };
 }
-
-// Captures every message posted to any BroadcastChannel during a test.
-const broadcastMessages = [];
 
 function configure(overrides = {}) {
   setConfig({
@@ -88,6 +104,7 @@ function configure(overrides = {}) {
     redirectUri: 'https://app.example/callback',
     isRouter: false,
     persistRefreshToken: false,
+    legacyTokenTransport: true,
     ...overrides,
   });
 }
@@ -129,6 +146,22 @@ test('router-mode login redirects directly to the auth service with correlation 
   assert.match(redirect.searchParams.get('correlation_id'), /^[A-Za-z0-9-]+$/);
 });
 
+test('login broadcasts a metadata-only LOGIN_STARTED event', () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+
+  core.login();
+
+  const loginStarted = broadcastMessages.find((m) => m.message?.type === 'LOGIN_STARTED');
+  assert.ok(loginStarted, 'expected a LOGIN_STARTED broadcast');
+  assert.equal(loginStarted.name, 'auth_platform_sso_channel');
+  assert.equal(loginStarted.message.clientKey, 'pms');
+  assert.equal('accessToken' in loginStarted.message, false);
+  assert.equal('refreshToken' in loginStarted.message, false);
+  assert.equal('idToken' in loginStarted.message, false);
+  assert.equal(storage.local.getItem('authToken'), null);
+});
+
 test('explicit account switch requests a fresh Keycloak credential prompt', () => {
   resetBrowser();
   configure();
@@ -161,6 +194,65 @@ test('callback stores id_token in tab-scoped storage and removes it from the URL
   assert.equal(token.getIdToken(), 'id-token-1');
   assert.equal(sessionStorage.getItem('auth_id_token'), 'id-token-1');
   assert.equal(location.search, '');
+});
+
+test('callback broadcasts a metadata-only LOGIN_COMPLETED event', () => {
+  resetBrowser('https://app.example/callback?access_token=access-1&state=state-1');
+  configure({ legacyTokenTransport: false });
+
+  core.handleCallback();
+
+  const loginCompleted = broadcastMessages.find((m) => m.message?.type === 'LOGIN_COMPLETED');
+  assert.ok(loginCompleted, 'expected a LOGIN_COMPLETED broadcast');
+  assert.equal(loginCompleted.name, 'auth_platform_sso_channel');
+  assert.equal(loginCompleted.message.clientKey, 'pms');
+  assert.equal('accessToken' in loginCompleted.message, false);
+  assert.equal('refreshToken' in loginCompleted.message, false);
+  assert.equal('idToken' in loginCompleted.message, false);
+  assert.equal(storage.local.getItem('authToken'), null);
+});
+
+test('subscribers receive each cross-tab event once across BroadcastChannel and storage fallback', () => {
+  resetBrowser();
+  configure();
+  const received = [];
+  const unsubscribe = core.subscribeToAuthEvents((event) => received.push(event));
+
+  core.publishAuthEvent('LOGIN_COMPLETED', { clientKey: 'pms' });
+  const event = broadcastMessages.at(-1).message;
+  broadcastChannels.at(-1).onmessage({ data: event });
+  window.dispatchEvent({
+    type: 'storage',
+    key: 'auth_platform_sso_event',
+    newValue: JSON.stringify(event),
+  });
+
+  assert.equal(received.length, 1);
+  assert.deepEqual(received[0], event);
+  unsubscribe();
+});
+
+test('subscribers receive storage events when BroadcastChannel is unavailable', () => {
+  resetBrowser();
+  configure();
+  globalThis.BroadcastChannel = undefined;
+  const received = [];
+  const unsubscribe = core.subscribeToAuthEvents((event) => received.push(event));
+  const event = {
+    type: 'LOGIN_COMPLETED',
+    clientKey: 'pms',
+    eventId: 'storage-event-1',
+    issuedAt: Date.now(),
+  };
+
+  window.dispatchEvent({
+    type: 'storage',
+    key: 'auth_platform_sso_event',
+    newValue: JSON.stringify(event),
+  });
+
+  assert.deepEqual(received, [event]);
+  unsubscribe();
 });
 
 test('callback rejects provider errors with a stable error code', () => {
@@ -453,5 +545,3 @@ test('restoreSession resolves false (no throw) when the cookie refresh is reject
   assert.equal(ok, false);
   assert.equal(token.getToken(), null);
 });
-
-
