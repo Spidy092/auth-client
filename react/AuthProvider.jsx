@@ -6,6 +6,7 @@ import { emitAuthDiagnostic } from '../diagnostics';
 import { 
   login as coreLogin, 
   logout as coreLogout,
+  restoreSession,
   startSessionSecurity,
   stopSessionSecurity,
   onSessionInvalid
@@ -16,8 +17,15 @@ export const AuthContext = createContext();
 export function AuthProvider({ children, onSessionExpired, manageSessionSecurity = true }) {
   const [token, setTokenState] = useState(getToken());
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(!!token); // Loading if we have a token to validate
+  // Loading if we already have a token to validate, OR if we have no token yet
+  // and must attempt a silent restore (memory-only mode after a reload). This
+  // prevents rendering "signed out" before restoreSession() resolves.
+  const [loading, setLoading] = useState(true);
   const [sessionValid, setSessionValid] = useState(true);
+  const restoreAttemptedRef = useRef(false);
+  // True while the initial silent restore is running, so the [token] effect
+  // does not prematurely declare the user signed out.
+  const restoreInProgressRef = useRef(!getToken());
   const sessionSecurityRef = useRef(null);
   const onSessionExpiredRef = useRef(onSessionExpired);
   const recoveryInFlightRef = useRef(null);
@@ -51,6 +59,39 @@ export function AuthProvider({ children, onSessionExpired, manageSessionSecurity
     });
 
     return unsubscribe;
+  }, []);
+
+  // Silent session restore on mount. In memory-only mode a reload starts with
+  // no in-memory token; restoreSession() attempts one refresh through the
+  // HttpOnly cookie. On success it sets the token (the listener above adopts
+  // it and the profile effect runs). On failure we stop "loading" so the app
+  // can render its login boundary. When a token is already present there is
+  // nothing to restore — the profile effect handles validation.
+  useEffect(() => {
+    if (restoreAttemptedRef.current) return;
+    restoreAttemptedRef.current = true;
+
+    if (getToken()) {
+      // Already have a token; the [token] effect below validates it.
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const ok = await restoreSession();
+        if (cancelled) return;
+        if (!ok) setLoading(false);
+        // On success, setToken inside restoreSession fired the token listener,
+        // which set token state and loading; nothing more to do here.
+      } catch {
+        if (!cancelled) setLoading(false);
+      } finally {
+        restoreInProgressRef.current = false;
+      }
+    })();
+
+    return () => { cancelled = true; };
   }, []);
 
   const invalidateLocalSession = () => {
@@ -133,6 +174,9 @@ export function AuthProvider({ children, onSessionExpired, manageSessionSecurity
     });
     
     if (!token) {
+      // Don't declare "signed out" while the initial silent restore is still
+      // in flight; the restore effect owns clearing loading in that case.
+      if (restoreInProgressRef.current) return;
       console.log('⚠️ AuthProvider: No token, setting loading=false');
       setLoading(false);
       return;

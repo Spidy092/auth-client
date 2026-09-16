@@ -1,5 +1,5 @@
 // auth-client/config.js
-import { enableRefreshTokenPersistence } from './token.js';
+import { enableRefreshTokenPersistence, enableLegacyTokenTransport } from './token.js';
 
 // ========== SESSION SECURITY CONFIGURATION ==========
 // These settings control how the auth-client handles token refresh and session validation
@@ -48,6 +48,15 @@ let config = {
   // All company browser clients share one channel so the receiver wiring is
   // identical everywhere. Apps may override per deployment.
   logoutChannelName: 'auth_platform_sso_channel',
+
+  // ========== LEGACY TOKEN TRANSPORT ==========
+  // true (default): access token mirrored to localStorage (survives reload,
+  //   syncs across tabs) — current behavior, XSS-reachable bearer credential.
+  // false (secure): access token kept in memory only; reload/other tabs
+  //   re-establish the session via a silent refresh through the HttpOnly
+  //   refresh cookie (restoreSession()). Move a client to false only once it
+  //   calls restoreSession() at bootstrap.
+  legacyTokenTransport: true,
 };
 
 const RUNTIME_POLICY_DEFAULTS = {
@@ -109,6 +118,7 @@ export function setConfig(customConfig = {}) {
 
   // Keep token storage synchronized when consumers reconfigure the singleton.
   enableRefreshTokenPersistence(config.persistRefreshToken);
+  enableLegacyTokenTransport(config.legacyTokenTransport);
   if (config.persistRefreshToken) {
     console.log('📦 Refresh token persistence ENABLED (localStorage on HTTPS)');
   }

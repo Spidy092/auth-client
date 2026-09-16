@@ -449,6 +449,41 @@ export async function refreshToken() {
   return refreshPromise;
 }
 
+// Re-establish the session at application startup (or when a signed-out tab is
+// told another tab logged in). In memory-only mode (legacyTokenTransport:
+// false) a page reload starts with no access token, so the app must ask the
+// server for one using the HttpOnly refresh cookie before deciding the user is
+// logged out. This is the standard SPA "silent authentication on load" step.
+//
+// Contract:
+//   - If a valid (unexpired) access token is already in memory, resolve true
+//     without a network call.
+//   - Otherwise attempt exactly one refresh (cookie-borne) and resolve true on
+//     success, false on a definitive auth rejection.
+//   - Never throw: bootstrap must not crash the app. A network/5xx error
+//     resolves false but does NOT clear any session (the caller can retry),
+//     matching refreshToken()'s own "don't logout on transient failure" rule.
+export async function restoreSession() {
+  const current = getToken();
+  // Treat a token with >10s of life left as usable, matching isAuthenticated().
+  if (current && getTimeUntilExpiry(current) > 10) {
+    return true;
+  }
+
+  try {
+    const token = await refreshToken();
+    return !!token;
+  } catch (err) {
+    // refreshToken() already cleared local state on a definitive auth
+    // rejection and left it intact on transient errors. Either way, report
+    // "not currently authenticated" without throwing.
+    emitAuthDiagnostic('SESSION_RESTORE_FAILED', 'FAILURE', err?.code || 'RESTORE_FAILED', {
+      clientKey: getConfig().clientKey,
+    });
+    return false;
+  }
+}
+
 export async function validateCurrentSession() {
   try {
     const { authBaseUrl } = getConfig();
