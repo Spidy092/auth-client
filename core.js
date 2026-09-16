@@ -24,6 +24,29 @@ import {
 
 let callbackProcessed = false;
 
+// Upper bound for the logout POST. A hung request aborts and falls through to
+// the front-channel (sso) or local (client) fallback, so logout never hangs.
+const LOGOUT_REQUEST_TIMEOUT_MS = 8000;
+
+// Post a same-origin cross-tab logout signal. Best-effort: never throws, so a
+// missing BroadcastChannel API or a closed channel can't block logout. The
+// message shape {type:'LOGOUT', reason} matches what consuming apps already
+// listen for; 'user_logout' marks an explicit user action so receivers can
+// land on a "signed out" page rather than a "session expired" one.
+function broadcastLogoutToTabs(clientKey, reason = 'user_logout') {
+  try {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const { logoutChannelName } = getConfig();
+    if (!logoutChannelName) return;
+    const channel = new BroadcastChannel(logoutChannelName);
+    channel.postMessage({ type: 'LOGOUT', reason, clientKey });
+    channel.close();
+  } catch (err) {
+    // Cross-tab notification is an enhancement, not a requirement for logout.
+    console.warn('⚠️ Cross-tab logout broadcast failed (non-fatal):', err?.message || err);
+  }
+}
+
 export function login(clientKeyArg, redirectUriArg, options = {}) {
   // ✅ Reset callback state when starting new login
   resetCallbackState();
@@ -116,12 +139,29 @@ export async function logout(options = {}) {
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
 
+  // Tell sibling tabs of this same-origin app to sign out too, natively via
+  // BroadcastChannel (the industry-standard multi-tab logout mechanism; see
+  // Auth0's SPA SDK). This fires before the network call so other tabs react
+  // immediately regardless of the POST outcome. It is best-effort: any failure
+  // (unsupported API, closed channel) must never block the logout itself. Note
+  // this is same-origin ONLY — cross-application logout is handled by the IdP
+  // (Keycloak back-channel logout), not by this channel.
+  broadcastLogoutToTabs(clientKey);
+
   // Every client — router or not — must hit the backend so it can:
   //  1. revoke the refresh token record, and
   //  2. hand back a Keycloak end-session URL so the IdP's SSO cookie is
   //     actually killed. Without step 2 the browser stays signed in at
   //     Keycloak and silently re-authenticates on the next login attempt.
   try {
+    // Bound the POST so a hung network (no response, no error) cannot leave a
+    // caller awaiting forever. On timeout the fetch rejects with an AbortError
+    // and we fall through to the front-channel/local fallback below, so logout
+    // always makes progress. AbortSignal.timeout is supported by every browser
+    // this SDK targets; guard for older/native runtimes just in case.
+    const logoutSignal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(LOGOUT_REQUEST_TIMEOUT_MS)
+      : undefined;
     const response = await fetch(`${authBaseUrl}/logout/${clientKey}`, {
       method: 'POST',
       credentials: 'include',
@@ -130,7 +170,8 @@ export async function logout(options = {}) {
         'Authorization': token ? `Bearer ${token}` : '',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ refreshToken, idToken, scope })
+      body: JSON.stringify({ refreshToken, idToken, scope }),
+      ...(logoutSignal ? { signal: logoutSignal } : {})
     });
 
     if (!response.ok) {
@@ -160,8 +201,22 @@ export async function logout(options = {}) {
     });
   }
 
-  // Fallback only if the backend call failed or returned no logout URL —
-  // the Keycloak SSO session may still be alive in this case.
+  // The JSON request can fail after the browser has already cleared local
+  // state. For SSO logout, finish through the auth service's top-level GET
+  // endpoint rather than redirecting straight to an app login page; that
+  // endpoint performs RP-initiated Keycloak logout and clears the shared SSO
+  // browser session. Do not put an access token in the URL: the httpOnly
+  // refresh cookie is sent with this navigation when it is available.
+  if (scope === 'sso' && authBaseUrl && clientKey) {
+    const frontChannelLogoutUrl = new URL(
+      `${authBaseUrl.replace(/\/+$/, '')}/logout/${encodeURIComponent(clientKey)}`
+    );
+    window.location.replace(frontChannelLogoutUrl.toString());
+    return;
+  }
+
+  // A client-only logout intentionally preserves the shared Keycloak SSO
+  // session, so its fallback must stay local to the application.
   const fallbackUrl = isRouterMode()
     ? new URL('/login', window.location.origin)
     : new URL('/login', accountUiUrl);
@@ -392,6 +447,41 @@ export async function refreshToken() {
   });
 
   return refreshPromise;
+}
+
+// Re-establish the session at application startup (or when a signed-out tab is
+// told another tab logged in). In memory-only mode (legacyTokenTransport:
+// false) a page reload starts with no access token, so the app must ask the
+// server for one using the HttpOnly refresh cookie before deciding the user is
+// logged out. This is the standard SPA "silent authentication on load" step.
+//
+// Contract:
+//   - If a valid (unexpired) access token is already in memory, resolve true
+//     without a network call.
+//   - Otherwise attempt exactly one refresh (cookie-borne) and resolve true on
+//     success, false on a definitive auth rejection.
+//   - Never throw: bootstrap must not crash the app. A network/5xx error
+//     resolves false but does NOT clear any session (the caller can retry),
+//     matching refreshToken()'s own "don't logout on transient failure" rule.
+export async function restoreSession() {
+  const current = getToken();
+  // Treat a token with >10s of life left as usable, matching isAuthenticated().
+  if (current && getTimeUntilExpiry(current) > 10) {
+    return true;
+  }
+
+  try {
+    const token = await refreshToken();
+    return !!token;
+  } catch (err) {
+    // refreshToken() already cleared local state on a definitive auth
+    // rejection and left it intact on transient errors. Either way, report
+    // "not currently authenticated" without throwing.
+    emitAuthDiagnostic('SESSION_RESTORE_FAILED', 'FAILURE', err?.code || 'RESTORE_FAILED', {
+      clientKey: getConfig().clientKey,
+    });
+    return false;
+  }
 }
 
 export async function validateCurrentSession() {

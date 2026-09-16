@@ -59,13 +59,26 @@ function resetBrowser(url = 'https://app.example/') {
   location.search = parsed.search;
   location.replaced = null;
   core.resetCallbackState();
+  // Reset the SDK's in-memory token state between tests. A real browser reload
+  // starts with a fresh module (accessToken=null); the test harness reuses the
+  // module, so clear it explicitly to simulate that.
+  token.clearToken();
   globalThis.fetch = undefined;
   Object.defineProperty(globalThis, 'navigator', {
     value: undefined,
     writable: true,
     configurable: true,
   });
+  broadcastMessages.length = 0;
+  globalThis.BroadcastChannel = class {
+    constructor(name) { this.name = name; }
+    postMessage(message) { broadcastMessages.push({ name: this.name, message }); }
+    close() {}
+  };
 }
+
+// Captures every message posted to any BroadcastChannel during a test.
+const broadcastMessages = [];
 
 function configure(overrides = {}) {
   setConfig({
@@ -294,7 +307,22 @@ test('SSO logout revokes local state, sends scope, and follows Keycloak logout',
   assert.equal(location.replaced, 'https://keycloak.example/logout?sid=s-1');
 });
 
-test('client-only logout uses client scope and falls back when backend logout fails', async () => {
+test('SSO logout uses the auth-service front-channel fallback when the POST fails', async () => {
+  resetBrowser();
+  configure();
+  token.setToken('access-sso-logout');
+  globalThis.fetch = async () => { throw new Error('network down'); };
+
+  await core.logout();
+
+  assert.equal(token.getToken(), null);
+  const fallback = new URL(location.replaced);
+  assert.equal(fallback.origin, 'https://auth.example');
+  assert.equal(fallback.pathname, '/auth/logout/pms');
+  assert.equal(fallback.search, '');
+});
+
+test('client-only logout uses client scope and keeps its fallback local when backend logout fails', async () => {
   resetBrowser();
   configure();
   token.setToken('access-client-logout');
@@ -309,3 +337,121 @@ test('client-only logout uses client scope and falls back when backend logout fa
   assert.equal(fallback.searchParams.get('logged_out'), 'true');
   assert.equal(fallback.searchParams.get('scope'), 'client');
 });
+
+test('logout broadcasts a LOGOUT message to sibling tabs on the configured channel', async () => {
+  resetBrowser();
+  configure({ logoutChannelName: 'auth_platform_sso_channel' });
+  token.setToken('access-broadcast');
+  globalThis.fetch = async () => response({ keycloakLogoutUrl: 'https://keycloak.example/logout?sid=s-1' });
+
+  await core.logout();
+
+  const logoutMsg = broadcastMessages.find((m) => m.message?.type === 'LOGOUT');
+  assert.ok(logoutMsg, 'expected a LOGOUT broadcast');
+  assert.equal(logoutMsg.name, 'auth_platform_sso_channel');
+  assert.equal(logoutMsg.message.reason, 'user_logout');
+  assert.equal(logoutMsg.message.clientKey, 'pms');
+});
+
+test('logout still broadcasts even when the backend POST fails', async () => {
+  resetBrowser();
+  configure({ logoutChannelName: 'auth_platform_sso_channel' });
+  token.setToken('access-broadcast-2');
+  globalThis.fetch = async () => { throw new Error('network down'); };
+
+  await core.logout();
+
+  const logoutMsg = broadcastMessages.find((m) => m.message?.type === 'LOGOUT');
+  assert.ok(logoutMsg, 'expected a LOGOUT broadcast even on POST failure');
+  assert.equal(logoutMsg.name, 'auth_platform_sso_channel');
+});
+
+test('logout does not throw when BroadcastChannel is unavailable', async () => {
+  resetBrowser();
+  configure();
+  globalThis.BroadcastChannel = undefined;
+  token.setToken('access-no-bc');
+  globalThis.fetch = async () => response({ keycloakLogoutUrl: 'https://keycloak.example/logout?sid=s-1' });
+
+  await core.logout();
+
+  assert.equal(location.replaced, 'https://keycloak.example/logout?sid=s-1');
+});
+
+test('legacyTokenTransport:true (default) persists the access token to localStorage', () => {
+  resetBrowser();
+  configure(); // default legacyTokenTransport true
+  token.setToken('access-legacy');
+
+  assert.equal(storage.local.getItem('authToken'), 'access-legacy');
+  assert.equal(token.getToken(), 'access-legacy');
+});
+
+test('legacyTokenTransport:false keeps the access token in memory only (nothing in localStorage)', () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  token.setToken('access-memory');
+
+  // In memory the token is available to this tab...
+  assert.equal(token.getToken(), 'access-memory');
+  // ...but it is never written to localStorage.
+  assert.equal(storage.local.getItem('authToken'), null);
+});
+
+test('memory-only: getToken does not read a stale legacy localStorage value', () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  // Simulate a stale value left by an old legacy build.
+  storage.local.setItem('authToken', 'stale-legacy-token');
+
+  // In-memory is empty and memory-only mode must not read localStorage.
+  assert.equal(token.getToken(), null);
+});
+
+test('restoreSession returns true without a network call when a valid token is already in memory', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  // A non-expired JWT (exp far in the future).
+  const future = Math.floor(Date.now() / 1000) + 3600;
+  const payload = Buffer.from(JSON.stringify({ exp: future })).toString('base64url');
+  token.setToken(`h.${payload}.s`);
+
+  let fetchCalled = false;
+  globalThis.fetch = async () => { fetchCalled = true; return response({}); };
+
+  const ok = await core.restoreSession();
+
+  assert.equal(ok, true);
+  assert.equal(fetchCalled, false);
+});
+
+test('restoreSession silently refreshes via the cookie when no token is in memory', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+
+  let request;
+  globalThis.fetch = async (url, options) => {
+    request = { url, options };
+    return response({ access_token: 'access-from-cookie' });
+  };
+
+  const ok = await core.restoreSession();
+
+  assert.equal(ok, true);
+  assert.equal(token.getToken(), 'access-from-cookie');
+  assert.equal(request.url, 'https://auth.example/auth/refresh/pms');
+  assert.equal(request.options.credentials, 'include');
+});
+
+test('restoreSession resolves false (no throw) when the cookie refresh is rejected', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  globalThis.fetch = async () => response({ error: 'invalid_grant' }, { status: 401, ok: false });
+
+  const ok = await core.restoreSession();
+
+  assert.equal(ok, false);
+  assert.equal(token.getToken(), null);
+});
+
+

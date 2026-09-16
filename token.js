@@ -21,7 +21,39 @@ function secureAttribute() {
 }
 
 // ========== ACCESS TOKEN ==========
+// Legacy token transport controls whether the access token is mirrored into
+// localStorage (a persistent, XSS-reachable bearer credential) and synced
+// across tabs via the storage event.
+//
+//   true  (default): current behavior — access token persisted to localStorage
+//                    so it survives reload and syncs across tabs.
+//   false (secure) : access token kept in memory only. Reload/other tabs
+//                    re-establish the session with a silent refresh through the
+//                    HttpOnly refresh cookie (see restoreSession()). This is the
+//                    industry-standard SPA posture; the long-lived credential is
+//                    never left in JavaScript-readable storage.
+//
+// Set from config.setConfig() via enableLegacyTokenTransport() to avoid a
+// circular import between config.js and token.js (mirrors persistRefreshToken).
+let _legacyTokenTransport = true;
+
+export function enableLegacyTokenTransport(enabled) {
+  _legacyTokenTransport = enabled !== false;
+}
+
 function writeAccessToken(token) {
+  // Memory-only mode: never touch localStorage for the access token. Still
+  // clear any value a previous legacy build may have left behind so a stale
+  // token cannot be read back.
+  if (!_legacyTokenTransport) {
+    try {
+      localStorage.removeItem('authToken');
+    } catch (err) {
+      // Storage can be unavailable in privacy-restricted contexts.
+    }
+    return;
+  }
+
   if (!token) {
     try {
       localStorage.removeItem('authToken');
@@ -39,6 +71,8 @@ function writeAccessToken(token) {
 }
 
 function readAccessToken() {
+  // Memory-only mode: there is no persisted access token to read.
+  if (!_legacyTokenTransport) return null;
   try {
     return localStorage.getItem('authToken');
   } catch (err) {
@@ -315,6 +349,11 @@ export function getListenerCount() {
 if (typeof window !== 'undefined' && window.addEventListener) {
   window.addEventListener('storage', (event) => {
     if (event.key !== 'authToken') return;
+    // In memory-only mode the access token is never in localStorage, so a
+    // storage event for it is either a stale legacy value or an attacker
+    // write. Ignore it; cross-tab state is coordinated by the app's auth-event
+    // channel + silent refresh instead.
+    if (!_legacyTokenTransport) return;
 
     const previousToken = accessToken;
     accessToken = event.newValue || null;

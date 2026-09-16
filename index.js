@@ -5,6 +5,7 @@ import {
   logout,
   handleCallback,
   refreshToken,
+  restoreSession,
   resetCallbackState,
   validateCurrentSession,
   // Session Security Functions
@@ -54,6 +55,7 @@ export const auth = {
   logoutSso: () => logout({ scope: 'sso' }),
   handleCallback,
   refreshToken,
+  restoreSession,
   resetCallbackState,
   validateCurrentSession,
 
