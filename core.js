@@ -37,6 +37,7 @@ const AUTH_EVENT_STORAGE_KEY = 'auth_platform_sso_event';
 const AUTH_EVENT_TYPES = new Set(['LOGIN_STARTED', 'LOGIN_COMPLETED', 'LOGOUT', 'SESSION_EXPIRED']);
 const LOGIN_LEASE_KEY = 'auth_platform_login_lease';
 const LOGIN_LEASE_TTL_MS = 5 * 60 * 1000;
+const LOGIN_LEASE_LOCK_PREFIX = 'auth-platform-login-lease:';
 
 let authEventChannel = null;
 let authEventChannelName = null;
@@ -188,6 +189,33 @@ export function acquireLoginLease(clientKey) {
   }
 }
 
+// Web Locks serializes the short localStorage read/write critical section
+// across same-origin tabs. The lease remains in localStorage so it survives
+// the redirect; the lock only protects creation of that lease. Older browsers
+// and restricted runtimes use the existing storage fallback.
+export async function acquireLoginLeaseAsync(clientKey) {
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+  if (!locks || typeof locks.request !== 'function') {
+    return acquireLoginLease(clientKey);
+  }
+
+  try {
+    return await locks.request(
+      `${LOGIN_LEASE_LOCK_PREFIX}${clientKey || 'default'}`,
+      { ifAvailable: true },
+      async (lock) => {
+        if (!lock) return false;
+        return acquireLoginLease(clientKey);
+      },
+    );
+  } catch {
+    // Browser privacy modes and embedded webviews can expose a partial Web
+    // Locks implementation. Authentication must fail open to the existing
+    // storage behavior rather than strand the user on the login screen.
+    return acquireLoginLease(clientKey);
+  }
+}
+
 export function clearLoginLease() {
   try {
     localStorage.removeItem(LOGIN_LEASE_KEY);
@@ -248,6 +276,48 @@ export function login(clientKeyArg, redirectUriArg, options = {}) {
     // Client mode: Redirect to centralized login
     return clientLogin(clientKey, redirectUri, options);
   }
+}
+
+// Promise-based login for applications that can await the cross-tab lease.
+// Keep login() synchronous for backwards compatibility with existing SDK
+// consumers; new clients should prefer loginAsync().
+export async function loginAsync(clientKeyArg, redirectUriArg, options = {}) {
+  resetCallbackState();
+
+  const {
+    clientKey: defaultClientKey,
+    redirectUri: defaultRedirectUri,
+  } = getConfig();
+
+  const clientKey = clientKeyArg || defaultClientKey;
+  const redirectUri = redirectUriArg || defaultRedirectUri;
+
+  if (!clientKey || !redirectUri) {
+    emitAuthDiagnostic('LOGIN_REJECTED', 'FAILURE', 'CLIENT_CONFIG_MISSING', { clientKey });
+    throw new Error('Missing clientKey or redirectUri');
+  }
+
+  if (!acquireLoginLock(clientKey, redirectUri)) {
+    emitAuthDiagnostic('LOGIN_DUPLICATE_SUPPRESSED', 'WARNING', 'LOGIN_ALREADY_IN_PROGRESS', { clientKey });
+    return false;
+  }
+  if (!await acquireLoginLeaseAsync(clientKey)) {
+    clearLoginLock();
+    emitAuthDiagnostic('LOGIN_DUPLICATE_SUPPRESSED', 'WARNING', 'LOGIN_ALREADY_IN_PROGRESS', { clientKey });
+    return false;
+  }
+
+  resetDiagnosticContext();
+  emitAuthDiagnostic('LOGIN_INITIATED', 'PENDING', 'NONE', { clientKey });
+  publishAuthEvent('LOGIN_STARTED', { clientKey });
+
+  sessionStorage.setItem('originalApp', clientKey);
+  sessionStorage.setItem('returnUrl', redirectUri);
+
+  if (isRouterMode()) {
+    return routerLogin(clientKey, redirectUri, options);
+  }
+  return clientLogin(clientKey, redirectUri, options);
 }
 
 // ✅ Router mode: Direct backend call

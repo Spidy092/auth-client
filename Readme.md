@@ -41,6 +41,18 @@ auth.setConfig({
 auth.login();
 ```
 
+For applications that coordinate login across same-origin tabs, prefer the
+promise-based entry point. It uses the Web Locks API when available and falls
+back to the storage lease for older or restricted browsers:
+
+```js
+await auth.loginAsync();
+```
+
+The login lease expires after 5 minutes as a crash-recovery upper bound. It is
+not a user-facing wait: a waiting tab should offer an immediate takeover
+action that calls `auth.clearLoginLease()` before starting a new login.
+
 ### Handle Callback
 ```js
 auth.handleCallback(); // Call this on /callback page

@@ -2,6 +2,7 @@
 import { setConfig, getConfig, isRouterMode, applyRuntimePolicy, loadRuntimePolicy } from './config';
 import {
   login,
+  loginAsync,
   logout,
   handleCallback,
   refreshToken,
@@ -9,6 +10,7 @@ import {
   subscribeToAuthEvents,
   publishAuthEvent,
   acquireLoginLease,
+  acquireLoginLeaseAsync,
   clearLoginLease,
   isLoginLeaseActive,
   resetCallbackState,
@@ -55,6 +57,7 @@ export const auth = {
 
   // 🔐 Core flows
   login,
+  loginAsync,
   logout,
   logoutClient: () => logout({ scope: 'client' }),
   logoutSso: () => logout({ scope: 'sso' }),
@@ -64,6 +67,7 @@ export const auth = {
   subscribeToAuthEvents,
   publishAuthEvent,
   acquireLoginLease,
+  acquireLoginLeaseAsync,
   clearLoginLease,
   isLoginLeaseActive,
   resetCallbackState,
