@@ -57,6 +57,14 @@ function isDefinitiveRefreshFailure(error) {
 
   return status === 401 ||
     status === 403 ||
+    // Auth-service uses coded 400 responses for an absent or unusable
+    // refresh session. These are authentication failures, not transient
+    // transport errors, and must clear the local session consistently.
+    (status === 400 && (
+      code === 'missing_token' ||
+      code === 'refresh_token_reuse_detected' ||
+      code === 'token_refresh_failed'
+    )) ||
     code === 'invalid_grant' ||
     message.includes('invalid_grant') ||
     message.includes('refresh failed: 401') ||

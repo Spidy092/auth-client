@@ -546,6 +546,28 @@ test('restoreSession resolves false (no throw) when the cookie refresh is reject
   assert.equal(token.getToken(), null);
 });
 
+test('restoreSession treats a coded missing session as a definitive logout', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  globalThis.fetch = async () => response({ error: 'MISSING_TOKEN' }, { status: 400, ok: false });
+
+  const ok = await core.restoreSession({ throwOnTransient: true });
+
+  assert.equal(ok, false);
+  assert.equal(token.getToken(), null);
+});
+
+test('restoreSession treats a coded refresh rejection as a definitive logout', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  globalThis.fetch = async () => response({ code: 'TOKEN_REFRESH_FAILED' }, { status: 400, ok: false });
+
+  const ok = await core.restoreSession({ throwOnTransient: true });
+
+  assert.equal(ok, false);
+  assert.equal(token.getToken(), null);
+});
+
 test('restoreSession can surface temporary refresh failures without exposing policy parsing to clients', async () => {
   resetBrowser();
   configure({ legacyTokenTransport: false });
