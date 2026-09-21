@@ -545,3 +545,27 @@ test('restoreSession resolves false (no throw) when the cookie refresh is reject
   assert.equal(ok, false);
   assert.equal(token.getToken(), null);
 });
+
+test('restoreSession can surface temporary refresh failures without exposing policy parsing to clients', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  globalThis.fetch = async () => response({ error: 'temporarily unavailable' }, { status: 503, ok: false });
+
+  await assert.rejects(
+    () => core.restoreSession({ throwOnTransient: true }),
+    (error) => error.status === 503
+  );
+  assert.equal(token.getToken(), null);
+});
+
+test('restoreSession treats a refresh-lock timeout as retryable even with TOKEN_REFRESH_FAILED code', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  globalThis.fetch = async () => response({ error: 'TOKEN_REFRESH_FAILED' }, { status: 408, ok: false });
+
+  await assert.rejects(
+    () => core.restoreSession({ throwOnTransient: true }),
+    (error) => error.status === 408 && error.code === 'TOKEN_REFRESH_FAILED'
+  );
+  assert.equal(token.getToken(), null);
+});

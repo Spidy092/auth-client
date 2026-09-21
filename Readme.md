@@ -79,6 +79,25 @@ Login start/completion and logout events use the configured `logoutChannelName`
 and carry metadata only. Applications must restore their own session; tokens
 are never sent through the cross-tab transport.
 
+When the application must decide whether to show a retry state or start a new
+login transaction, it can ask the SDK to surface only temporary failures:
+
+```js
+try {
+  const restored = await auth.restoreSession({ throwOnTransient: true });
+  if (!restored) {
+    // The refresh credential is definitively invalid; show the login boundary.
+  }
+} catch {
+  // Network/control-plane failure; keep the session recoverable and offer retry.
+}
+```
+
+The default `auth.restoreSession()` behavior remains a boolean for backwards
+compatibility. The SDK owns the distinction between definitive `401`/`403` or
+`invalid_grant` failures and retryable failures; applications must not parse
+refresh error messages themselves.
+
 ### Get Token
 ```js
 const token = auth.getToken();

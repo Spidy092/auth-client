@@ -45,6 +45,24 @@ let authEventStorageListenerInstalled = false;
 const authEventListeners = new Set();
 const seenAuthEventIds = new Set();
 
+// Refresh failures have two different meanings to a browser client:
+// definitive authentication failures require a new login, while transport
+// and control-plane failures must remain retryable. Keep this policy inside
+// the SDK so every client makes the same decision without parsing messages or
+// server error codes independently.
+function isDefinitiveRefreshFailure(error) {
+  const status = Number(error?.status || error?.response?.status || 0);
+  const code = String(error?.code || error?.response?.data?.code || '').toLowerCase();
+  const message = String(error?.message || '').toLowerCase();
+
+  return status === 401 ||
+    status === 403 ||
+    code === 'invalid_grant' ||
+    message.includes('invalid_grant') ||
+    message.includes('refresh failed: 401') ||
+    message.includes('refresh failed: 403');
+}
+
 function readAuthEvent(value) {
   try {
     return JSON.parse(value || 'null');
@@ -666,11 +684,7 @@ export async function refreshToken() {
         // Only clear tokens on definitive auth failure (server explicitly rejected).
         // Network errors / timeouts should NOT clear tokens — the session may still
         // be valid and the next attempt may succeed.
-        const isAuthRejection = err.message?.includes('401') ||
-          err.message?.includes('403') ||
-          err.message?.includes('invalid_grant') ||
-          err.message?.includes('Refresh failed: 4');
-        if (isAuthRejection) {
+        if (isDefinitiveRefreshFailure(err)) {
           clearToken();
           clearRefreshToken();
         }
@@ -701,7 +715,8 @@ export async function refreshToken() {
 //   - Never throw: bootstrap must not crash the app. A network/5xx error
 //     resolves false but does NOT clear any session (the caller can retry),
 //     matching refreshToken()'s own "don't logout on transient failure" rule.
-export async function restoreSession() {
+export async function restoreSession(options = {}) {
+  const throwOnTransient = options?.throwOnTransient === true;
   const current = getToken();
   // Treat a token with >10s of life left as usable, matching isAuthenticated().
   if (current && getTimeUntilExpiry(current) > 10) {
@@ -713,11 +728,13 @@ export async function restoreSession() {
     return !!token;
   } catch (err) {
     // refreshToken() already cleared local state on a definitive auth
-    // rejection and left it intact on transient errors. Either way, report
-    // "not currently authenticated" without throwing.
+    // rejection and left it intact on transient errors. Callers that need to
+    // distinguish those outcomes can opt into a transient throw; the default
+    // remains the backwards-compatible boolean result.
     emitAuthDiagnostic('SESSION_RESTORE_FAILED', 'FAILURE', err?.code || 'RESTORE_FAILED', {
       clientKey: getConfig().clientKey,
     });
+    if (throwOnTransient && !isDefinitiveRefreshFailure(err)) throw err;
     return false;
   }
 }
