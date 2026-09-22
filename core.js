@@ -135,6 +135,25 @@ let authEventStorageListenerInstalled = false;
 const authEventListeners = new Set();
 const seenAuthEventIds = new Set();
 
+// A memory-only application normally calls restoreSession() once from its
+// provider and once more from its login boundary. The second call happens
+// after the first request has settled, so the refresh single-flight lock alone
+// cannot coalesce them. Keep the settled bootstrap outcome briefly so one page
+// load produces one refresh request. The short window is intentionally much
+// smaller than a login lease and is invalidated by LOGIN_COMPLETED; it is not a
+// session cache or an authorization decision.
+const RESTORE_RESULT_CACHE_TTL_MS = 1000;
+let restoreResultCache = null;
+
+function restoreCacheKey() {
+  const { clientKey, authBaseUrl } = getConfig();
+  return `${clientKey || ''}|${authBaseUrl || ''}`;
+}
+
+function clearRestoreResultCache() {
+  restoreResultCache = null;
+}
+
 // Refresh failures have two different meanings to a browser client:
 // definitive authentication failures require a new login, while transport
 // and control-plane failures must remain retryable. Keep this policy inside
@@ -171,6 +190,10 @@ function readAuthEvent(value) {
 
 function deliverAuthEvent(message) {
   if (!message || typeof message.type !== 'string' || !AUTH_EVENT_TYPES.has(message.type)) return;
+
+  // A sibling callback may have just set the HttpOnly refresh cookie. Never
+  // let a prior no-session bootstrap result suppress that recovery attempt.
+  if (message.type === 'LOGIN_COMPLETED') clearRestoreResultCache();
 
   if (message.eventId) {
     if (seenAuthEventIds.has(message.eventId)) return;
@@ -353,6 +376,7 @@ function broadcastLogoutToTabs(clientKey, reason = 'user_logout') {
 export function login(clientKeyArg, redirectUriArg, options = {}) {
   // ✅ Reset callback state when starting new login
   resetCallbackState();
+  clearRestoreResultCache();
 
   const {
     clientKey: defaultClientKey,
@@ -399,6 +423,7 @@ export function login(clientKeyArg, redirectUriArg, options = {}) {
 // consumers; new clients should prefer loginAsync().
 export async function loginAsync(clientKeyArg, redirectUriArg, options = {}) {
   resetCallbackState();
+  clearRestoreResultCache();
 
   const {
     clientKey: defaultClientKey,
@@ -822,8 +847,22 @@ export async function restoreSession(options = {}) {
     return true;
   }
 
+  const now = Date.now();
+  const cacheKey = restoreCacheKey();
+  if (
+    restoreResultCache &&
+    restoreResultCache.key === cacheKey &&
+    now - restoreResultCache.settledAt < RESTORE_RESULT_CACHE_TTL_MS
+  ) {
+    if (restoreResultCache.error && throwOnTransient && !isDefinitiveRefreshFailure(restoreResultCache.error)) {
+      throw restoreResultCache.error;
+    }
+    return restoreResultCache.ok;
+  }
+
   try {
     const token = await refreshToken();
+    restoreResultCache = { key: cacheKey, settledAt: Date.now(), ok: !!token, error: null };
     return !!token;
   } catch (err) {
     // refreshToken() already cleared local state on a definitive auth
@@ -833,9 +872,16 @@ export async function restoreSession(options = {}) {
     emitAuthDiagnostic('SESSION_RESTORE_FAILED', 'FAILURE', err?.code || 'RESTORE_FAILED', {
       clientKey: getConfig().clientKey,
     });
+    restoreResultCache = { key: cacheKey, settledAt: Date.now(), ok: false, error: err };
     if (throwOnTransient && !isDefinitiveRefreshFailure(err)) throw err;
     return false;
   }
+}
+
+// Test and host integration hook: clears only the short-lived bootstrap
+// outcome, never browser credentials or the server session.
+export function resetRestoreSessionCache() {
+  clearRestoreResultCache();
 }
 
 export async function validateCurrentSession() {
