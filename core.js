@@ -39,6 +39,96 @@ const LOGIN_LEASE_KEY = 'auth_platform_login_lease';
 const LOGIN_LEASE_TTL_MS = 5 * 60 * 1000;
 const LOGIN_LEASE_LOCK_PREFIX = 'auth-platform-login-lease:';
 
+// Authentication failure categories are part of the SDK contract. Clients
+// should render these categories but must not duplicate status/code parsing.
+export const AUTH_ERROR_CATEGORIES = Object.freeze({
+  RATE_LIMITED: 'rate_limited',
+  SESSION_EXPIRED: 'session_expired',
+  TRANSIENT: 'transient',
+  UNKNOWN: 'unknown',
+});
+
+const RATE_LIMIT_CODES = new Set([
+  'RATE_LIMITED',
+  'BRUTE_FORCE_DETECTED',
+  'AUTHENTICATION_RATE_LIMITED',
+]);
+
+const DEFAULT_AUTH_ERROR_MESSAGE = 'We could not verify your session right now. Please try again.';
+
+function readErrorStatus(error) {
+  return Number(error?.status ?? error?.response?.status ?? error?.response?.data?.status ?? 0);
+}
+
+function readErrorCode(error) {
+  return String(
+    error?.code ??
+    error?.response?.data?.error ??
+    error?.response?.data?.code ??
+    '',
+  ).toUpperCase();
+}
+
+function readErrorMessage(error) {
+  return String(error?.message ?? error?.response?.data?.message ?? '');
+}
+
+function readRetryAfterSeconds(error) {
+  const value = error?.retryAfterSeconds ?? error?.response?.headers?.get?.('retry-after');
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds) : null;
+}
+
+/**
+ * Normalize auth failures for every consuming application.
+ *
+ * This intentionally returns metadata, not an app-specific UI component, so
+ * each client can keep its own layout while sharing one security policy.
+ */
+export function getAuthErrorMetadata(error) {
+  const status = readErrorStatus(error);
+  const code = readErrorCode(error);
+  const message = readErrorMessage(error);
+  const retryAfterSeconds = readRetryAfterSeconds(error);
+  const searchable = `${code} ${message}`;
+
+  let category = AUTH_ERROR_CATEGORIES.UNKNOWN;
+  if (status === 429 || RATE_LIMIT_CODES.has(code)) {
+    category = AUTH_ERROR_CATEGORIES.RATE_LIMITED;
+  } else if (/authentication session.*(expired|timed out)|login attempt timed out/i.test(searchable)) {
+    category = AUTH_ERROR_CATEGORIES.SESSION_EXPIRED;
+  } else if (status === 408 || status >= 500) {
+    category = AUTH_ERROR_CATEGORIES.TRANSIENT;
+  }
+
+  return Object.freeze({
+    category,
+    status,
+    code: code || null,
+    retryAfterSeconds,
+  });
+}
+
+/**
+ * Return the SDK's default safe recovery copy. Apps may provide a contextual
+ * fallback, but the classification and shared messages remain centralized.
+ */
+export function authErrorToMessage(error, fallback = DEFAULT_AUTH_ERROR_MESSAGE) {
+  const { category } = getAuthErrorMetadata(error);
+
+  if (category === AUTH_ERROR_CATEGORIES.RATE_LIMITED) {
+    return 'Too many sign-in attempts were detected. Please wait a moment and try again.';
+  }
+  if (category === AUTH_ERROR_CATEGORIES.SESSION_EXPIRED) {
+    return 'This sign-in attempt expired before it finished. Start sign-in again to continue.';
+  }
+  if (category === AUTH_ERROR_CATEGORIES.TRANSIENT) {
+    return 'The sign-in service is temporarily unavailable. Please try again in a moment.';
+  }
+
+  return fallback;
+}
+
 let authEventChannel = null;
 let authEventChannelName = null;
 let authEventStorageListenerInstalled = false;
@@ -665,6 +755,7 @@ export async function refreshToken() {
           const refreshError = new Error(`Refresh failed: ${response.status}`);
           refreshError.code = serverCode || `HTTP_${response.status}`;
           refreshError.status = response.status;
+          refreshError.retryAfterSeconds = readRetryAfterSeconds({ response });
           throw refreshError;
         }
 
