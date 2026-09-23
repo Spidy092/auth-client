@@ -157,6 +157,8 @@ let authEventChannel = null;
 let authEventChannelName = null;
 let authEventStorageListenerInstalled = false;
 let authEventStoragePollTimer = null;
+let lastPolledAuthEventRecord = null;
+let authEventStoragePollBaselineReady = false;
 const authEventListeners = new Set();
 const seenAuthEventIds = new Set();
 const publishedAuthEventIds = new Set();
@@ -274,7 +276,16 @@ function pollAuthEventStorage() {
   if (!authEventListeners.size || typeof localStorage === 'undefined') return;
 
   try {
-    const event = readAuthEvent(localStorage.getItem(AUTH_EVENT_STORAGE_KEY));
+    const raw = localStorage.getItem(AUTH_EVENT_STORAGE_KEY);
+    if (!authEventStoragePollBaselineReady) {
+      lastPolledAuthEventRecord = raw;
+      authEventStoragePollBaselineReady = true;
+      return;
+    }
+    if (raw === lastPolledAuthEventRecord) return;
+    lastPolledAuthEventRecord = raw;
+
+    const event = readAuthEvent(raw);
     if (event?.eventId && publishedAuthEventIds.has(event.eventId)) return;
     deliverAuthEvent(event);
   } catch {
@@ -284,6 +295,13 @@ function pollAuthEventStorage() {
 
 function startAuthEventStoragePoll() {
   if (authEventStoragePollTimer || typeof setInterval !== 'function') return;
+  try {
+    lastPolledAuthEventRecord = localStorage.getItem(AUTH_EVENT_STORAGE_KEY);
+    authEventStoragePollBaselineReady = true;
+  } catch {
+    lastPolledAuthEventRecord = null;
+    authEventStoragePollBaselineReady = false;
+  }
   authEventStoragePollTimer = setInterval(pollAuthEventStorage, AUTH_EVENT_STORAGE_POLL_INTERVAL_MS);
 }
 
@@ -291,6 +309,8 @@ function stopAuthEventStoragePoll() {
   if (!authEventStoragePollTimer || typeof clearInterval !== 'function') return;
   clearInterval(authEventStoragePollTimer);
   authEventStoragePollTimer = null;
+  lastPolledAuthEventRecord = null;
+  authEventStoragePollBaselineReady = false;
 }
 
 function replayRecentLoginCompletion() {
@@ -826,6 +846,14 @@ async function withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshGen
   return run();
 }
 
+/**
+ * Refresh the access token through the current browser session.
+ *
+ * @returns {Promise<string | null>} The refreshed access token, or null when
+ * the request became stale because the session changed while it was in flight.
+ * Definitive and transient refresh failures still reject with their original
+ * error so callers can apply the SDK's error policy.
+ */
 export async function refreshToken() {
   const { clientKey, authBaseUrl } = getConfig();
   const refreshGeneration = sessionGeneration;
@@ -911,6 +939,9 @@ export async function refreshToken() {
         return access_token;
       } catch (err) {
         console.error('❌ Token refresh error:', err);
+        // A definitive failure from an older generation must not clear a
+        // session that a callback or sibling tab established afterward.
+        if (refreshGeneration !== sessionGeneration) return null;
         // Only clear tokens on definitive auth failure (server explicitly rejected).
         // Network errors / timeouts should NOT clear tokens — the session may still
         // be valid and the next attempt may succeed.
