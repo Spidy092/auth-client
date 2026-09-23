@@ -39,11 +39,146 @@ const LOGIN_LEASE_KEY = 'auth_platform_login_lease';
 const LOGIN_LEASE_TTL_MS = 5 * 60 * 1000;
 const LOGIN_LEASE_LOCK_PREFIX = 'auth-platform-login-lease:';
 
+// Authentication failure categories are part of the SDK contract. Clients
+// should render these categories but must not duplicate status/code parsing.
+export const AUTH_ERROR_CATEGORIES = Object.freeze({
+  RATE_LIMITED: 'rate_limited',
+  SESSION_EXPIRED: 'session_expired',
+  TRANSIENT: 'transient',
+  UNKNOWN: 'unknown',
+});
+
+const RATE_LIMIT_CODES = new Set([
+  'RATE_LIMITED',
+  'BRUTE_FORCE_DETECTED',
+  'AUTHENTICATION_RATE_LIMITED',
+]);
+
+const DEFAULT_AUTH_ERROR_MESSAGE = 'We could not verify your session right now. Please try again.';
+
+function readErrorStatus(error) {
+  return Number(error?.status ?? error?.response?.status ?? error?.response?.data?.status ?? 0);
+}
+
+function readErrorCode(error) {
+  return String(
+    error?.code ??
+    error?.response?.data?.error ??
+    error?.response?.data?.code ??
+    '',
+  ).toUpperCase();
+}
+
+function readErrorMessage(error) {
+  return String(error?.message ?? error?.response?.data?.message ?? '');
+}
+
+function readRetryAfterSeconds(error) {
+  const value = error?.retryAfterSeconds ?? error?.response?.headers?.get?.('retry-after');
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds) : null;
+}
+
+/**
+ * Normalize auth failures for every consuming application.
+ *
+ * This intentionally returns metadata, not an app-specific UI component, so
+ * each client can keep its own layout while sharing one security policy.
+ */
+export function getAuthErrorMetadata(error) {
+  const status = readErrorStatus(error);
+  const code = readErrorCode(error);
+  const message = readErrorMessage(error);
+  const retryAfterSeconds = readRetryAfterSeconds(error);
+  const searchable = `${code} ${message}`;
+
+  let category = AUTH_ERROR_CATEGORIES.UNKNOWN;
+  if (status === 429 || RATE_LIMIT_CODES.has(code)) {
+    category = AUTH_ERROR_CATEGORIES.RATE_LIMITED;
+  } else if (/authentication session.*(expired|timed out)|login attempt timed out/i.test(searchable)) {
+    category = AUTH_ERROR_CATEGORIES.SESSION_EXPIRED;
+  } else if (status === 408 || status >= 500) {
+    category = AUTH_ERROR_CATEGORIES.TRANSIENT;
+  }
+
+  return Object.freeze({
+    category,
+    status,
+    code: code || null,
+    retryAfterSeconds,
+  });
+}
+
+/**
+ * Return the SDK's default safe recovery copy. Apps may provide a contextual
+ * fallback, but the classification and shared messages remain centralized.
+ */
+export function authErrorToMessage(error, fallback = DEFAULT_AUTH_ERROR_MESSAGE) {
+  const { category } = getAuthErrorMetadata(error);
+
+  if (category === AUTH_ERROR_CATEGORIES.RATE_LIMITED) {
+    return 'Too many sign-in attempts were detected. Please wait a moment and try again.';
+  }
+  if (category === AUTH_ERROR_CATEGORIES.SESSION_EXPIRED) {
+    return 'This sign-in attempt expired before it finished. Start sign-in again to continue.';
+  }
+  if (category === AUTH_ERROR_CATEGORIES.TRANSIENT) {
+    return 'The sign-in service is temporarily unavailable. Please try again in a moment.';
+  }
+
+  return fallback;
+}
+
 let authEventChannel = null;
 let authEventChannelName = null;
 let authEventStorageListenerInstalled = false;
 const authEventListeners = new Set();
 const seenAuthEventIds = new Set();
+
+// A memory-only application normally calls restoreSession() once from its
+// provider and once more from its login boundary. The second call happens
+// after the first request has settled, so the refresh single-flight lock alone
+// cannot coalesce them. Keep the settled bootstrap outcome briefly so one page
+// load produces one refresh request. The short window is intentionally much
+// smaller than a login lease and is invalidated by LOGIN_COMPLETED; it is not a
+// session cache or an authorization decision.
+const RESTORE_RESULT_CACHE_TTL_MS = 1000;
+let restoreResultCache = null;
+
+function restoreCacheKey() {
+  const { clientKey, authBaseUrl } = getConfig();
+  return `${clientKey || ''}|${authBaseUrl || ''}`;
+}
+
+function clearRestoreResultCache() {
+  restoreResultCache = null;
+}
+
+// Refresh failures have two different meanings to a browser client:
+// definitive authentication failures require a new login, while transport
+// and control-plane failures must remain retryable. Keep this policy inside
+// the SDK so every client makes the same decision without parsing messages or
+// server error codes independently.
+function isDefinitiveRefreshFailure(error) {
+  const status = Number(error?.status || error?.response?.status || 0);
+  const code = String(error?.code || error?.response?.data?.code || '').toLowerCase();
+  const message = String(error?.message || '').toLowerCase();
+
+  return status === 401 ||
+    status === 403 ||
+    // Auth-service uses coded 400 responses for an absent or unusable
+    // refresh session. These are authentication failures, not transient
+    // transport errors, and must clear the local session consistently.
+    (status === 400 && (
+      code === 'missing_token' ||
+      code === 'refresh_token_reuse_detected' ||
+      code === 'token_refresh_failed'
+    )) ||
+    code === 'invalid_grant' ||
+    message.includes('invalid_grant') ||
+    message.includes('refresh failed: 401') ||
+    message.includes('refresh failed: 403');
+}
 
 function readAuthEvent(value) {
   try {
@@ -55,6 +190,10 @@ function readAuthEvent(value) {
 
 function deliverAuthEvent(message) {
   if (!message || typeof message.type !== 'string' || !AUTH_EVENT_TYPES.has(message.type)) return;
+
+  // A sibling callback may have just set the HttpOnly refresh cookie. Never
+  // let a prior no-session bootstrap result suppress that recovery attempt.
+  if (message.type === 'LOGIN_COMPLETED') clearRestoreResultCache();
 
   if (message.eventId) {
     if (seenAuthEventIds.has(message.eventId)) return;
@@ -237,6 +376,7 @@ function broadcastLogoutToTabs(clientKey, reason = 'user_logout') {
 export function login(clientKeyArg, redirectUriArg, options = {}) {
   // ✅ Reset callback state when starting new login
   resetCallbackState();
+  clearRestoreResultCache();
 
   const {
     clientKey: defaultClientKey,
@@ -283,6 +423,7 @@ export function login(clientKeyArg, redirectUriArg, options = {}) {
 // consumers; new clients should prefer loginAsync().
 export async function loginAsync(clientKeyArg, redirectUriArg, options = {}) {
   resetCallbackState();
+  clearRestoreResultCache();
 
   const {
     clientKey: defaultClientKey,
@@ -639,6 +780,7 @@ export async function refreshToken() {
           const refreshError = new Error(`Refresh failed: ${response.status}`);
           refreshError.code = serverCode || `HTTP_${response.status}`;
           refreshError.status = response.status;
+          refreshError.retryAfterSeconds = readRetryAfterSeconds({ response });
           throw refreshError;
         }
 
@@ -666,11 +808,7 @@ export async function refreshToken() {
         // Only clear tokens on definitive auth failure (server explicitly rejected).
         // Network errors / timeouts should NOT clear tokens — the session may still
         // be valid and the next attempt may succeed.
-        const isAuthRejection = err.message?.includes('401') ||
-          err.message?.includes('403') ||
-          err.message?.includes('invalid_grant') ||
-          err.message?.includes('Refresh failed: 4');
-        if (isAuthRejection) {
+        if (isDefinitiveRefreshFailure(err)) {
           clearToken();
           clearRefreshToken();
         }
@@ -701,25 +839,49 @@ export async function refreshToken() {
 //   - Never throw: bootstrap must not crash the app. A network/5xx error
 //     resolves false but does NOT clear any session (the caller can retry),
 //     matching refreshToken()'s own "don't logout on transient failure" rule.
-export async function restoreSession() {
+export async function restoreSession(options = {}) {
+  const throwOnTransient = options?.throwOnTransient === true;
   const current = getToken();
   // Treat a token with >10s of life left as usable, matching isAuthenticated().
   if (current && getTimeUntilExpiry(current) > 10) {
     return true;
   }
 
+  const now = Date.now();
+  const cacheKey = restoreCacheKey();
+  if (
+    restoreResultCache &&
+    restoreResultCache.key === cacheKey &&
+    now - restoreResultCache.settledAt < RESTORE_RESULT_CACHE_TTL_MS
+  ) {
+    if (restoreResultCache.error && throwOnTransient && !isDefinitiveRefreshFailure(restoreResultCache.error)) {
+      throw restoreResultCache.error;
+    }
+    return restoreResultCache.ok;
+  }
+
   try {
     const token = await refreshToken();
+    restoreResultCache = { key: cacheKey, settledAt: Date.now(), ok: !!token, error: null };
     return !!token;
   } catch (err) {
     // refreshToken() already cleared local state on a definitive auth
-    // rejection and left it intact on transient errors. Either way, report
-    // "not currently authenticated" without throwing.
+    // rejection and left it intact on transient errors. Callers that need to
+    // distinguish those outcomes can opt into a transient throw; the default
+    // remains the backwards-compatible boolean result.
     emitAuthDiagnostic('SESSION_RESTORE_FAILED', 'FAILURE', err?.code || 'RESTORE_FAILED', {
       clientKey: getConfig().clientKey,
     });
+    restoreResultCache = { key: cacheKey, settledAt: Date.now(), ok: false, error: err };
+    if (throwOnTransient && !isDefinitiveRefreshFailure(err)) throw err;
     return false;
   }
+}
+
+// Test and host integration hook: clears only the short-lived bootstrap
+// outcome, never browser credentials or the server session.
+export function resetRestoreSessionCache() {
+  clearRestoreResultCache();
 }
 
 export async function validateCurrentSession() {

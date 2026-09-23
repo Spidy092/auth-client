@@ -73,6 +73,7 @@ function resetBrowser(url = 'https://app.example/') {
   location.search = parsed.search;
   location.replaced = null;
   core.resetCallbackState();
+  core.resetRestoreSessionCache();
   // Reset the SDK's in-memory token state between tests. A real browser reload
   // starts with a fresh module (accessToken=null); the test harness reuses the
   // module, so clear it explicitly to simulate that.
@@ -544,4 +545,87 @@ test('restoreSession resolves false (no throw) when the cookie refresh is reject
 
   assert.equal(ok, false);
   assert.equal(token.getToken(), null);
+});
+
+test('restoreSession treats a coded missing session as a definitive logout', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  globalThis.fetch = async () => response({ error: 'MISSING_TOKEN' }, { status: 400, ok: false });
+
+  const ok = await core.restoreSession({ throwOnTransient: true });
+
+  assert.equal(ok, false);
+  assert.equal(token.getToken(), null);
+});
+
+test('restoreSession treats a coded refresh rejection as a definitive logout', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  globalThis.fetch = async () => response({ code: 'TOKEN_REFRESH_FAILED' }, { status: 400, ok: false });
+
+  const ok = await core.restoreSession({ throwOnTransient: true });
+
+  assert.equal(ok, false);
+  assert.equal(token.getToken(), null);
+});
+
+test('restoreSession can surface temporary refresh failures without exposing policy parsing to clients', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  globalThis.fetch = async () => response({ error: 'temporarily unavailable' }, { status: 503, ok: false });
+
+  await assert.rejects(
+    () => core.restoreSession({ throwOnTransient: true }),
+    (error) => error.status === 503
+  );
+  assert.equal(token.getToken(), null);
+});
+
+test('restoreSession treats a refresh-lock timeout as retryable even with TOKEN_REFRESH_FAILED code', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  globalThis.fetch = async () => response({ error: 'TOKEN_REFRESH_FAILED' }, { status: 408, ok: false });
+
+  await assert.rejects(
+    () => core.restoreSession({ throwOnTransient: true }),
+    (error) => error.status === 408 && error.code === 'TOKEN_REFRESH_FAILED'
+  );
+  assert.equal(token.getToken(), null);
+});
+
+test('restoreSession coalesces the settled no-session result during one bootstrap', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return response({ error: 'MISSING_TOKEN' }, { status: 400, ok: false });
+  };
+
+  assert.equal(await core.restoreSession(), false);
+  assert.equal(await core.restoreSession({ throwOnTransient: true }), false);
+  assert.equal(fetchCalls, 1);
+});
+
+test('LOGIN_COMPLETED invalidates a prior no-session bootstrap result', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  const unsubscribe = core.subscribeToAuthEvents(() => {});
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return fetchCalls === 1
+      ? response({ error: 'MISSING_TOKEN' }, { status: 400, ok: false })
+      : response({ access_token: 'access-after-sibling-login' });
+  };
+
+  assert.equal(await core.restoreSession(), false);
+  const channel = broadcastChannels[0];
+  assert.ok(channel, 'expected the restore path to create an auth event channel');
+  channel.onmessage({ data: { type: 'LOGIN_COMPLETED', clientKey: 'pms', eventId: 'event-1' } });
+
+  assert.equal(await core.restoreSession(), true);
+  assert.equal(fetchCalls, 2);
+  assert.equal(token.getToken(), 'access-after-sibling-login');
+  unsubscribe();
 });

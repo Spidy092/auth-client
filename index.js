@@ -13,6 +13,8 @@ import {
   acquireLoginLeaseAsync,
   clearLoginLease,
   isLoginLeaseActive,
+  getAuthErrorMetadata,
+  authErrorToMessage,
   resetCallbackState,
   validateCurrentSession,
   // Session Security Functions
@@ -70,6 +72,8 @@ export const auth = {
   acquireLoginLeaseAsync,
   clearLoginLease,
   isLoginLeaseActive,
+  getAuthErrorMetadata,
+  authErrorToMessage,
   resetCallbackState,
   validateCurrentSession,
 
@@ -143,6 +147,9 @@ export {
   AUTH_EVENT_TYPES,
   LOGIN_LEASE_KEY,
   LOGIN_LEASE_TTL_MS,
+  AUTH_ERROR_CATEGORIES,
+  getAuthErrorMetadata,
+  authErrorToMessage,
 } from './core';
 export { SINGLE_ORG_DENIED_EVENT, isTenantAccessDenied, isSingleOrganizationMode } from './api';
 export { AuthProvider } from './react/AuthProvider';
