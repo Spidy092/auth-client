@@ -120,8 +120,9 @@ if (!token) {
 ```
 
 `auth.refreshToken()` returns `Promise<string | null>`. It resolves to `null`
-only when logout or a completed login invalidates the refresh that was already
-in flight. Network and authentication failures reject with the original error.
+when a session change, including login initiation, logout, or completed login,
+invalidates the refresh that was already in flight. Network and authentication
+failures reject with the original error.
 
 ---
 
