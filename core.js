@@ -76,7 +76,12 @@ function readErrorMessage(error) {
 function readRetryAfterSeconds(error) {
   const value = error?.retryAfterSeconds ?? error?.response?.headers?.get?.('retry-after');
   const seconds = Number(value);
-  return Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds) : null;
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds);
+
+  const retryAt = Date.parse(String(value ?? ''));
+  if (!Number.isFinite(retryAt)) return null;
+
+  return Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
 }
 
 /**
@@ -144,6 +149,7 @@ const seenAuthEventIds = new Set();
 // session cache or an authorization decision.
 const RESTORE_RESULT_CACHE_TTL_MS = 1000;
 let restoreResultCache = null;
+let restoreResultCacheGeneration = 0;
 
 function restoreCacheKey() {
   const { clientKey, authBaseUrl } = getConfig();
@@ -152,6 +158,11 @@ function restoreCacheKey() {
 
 function clearRestoreResultCache() {
   restoreResultCache = null;
+}
+
+function invalidateRestoreResultCache() {
+  restoreResultCache = null;
+  restoreResultCacheGeneration += 1;
 }
 
 // Refresh failures have two different meanings to a browser client:
@@ -180,6 +191,12 @@ function isDefinitiveRefreshFailure(error) {
     message.includes('refresh failed: 403');
 }
 
+function shouldRethrowRestoreFailure(error) {
+  const { category } = getAuthErrorMetadata(error);
+  return category === AUTH_ERROR_CATEGORIES.TRANSIENT ||
+    category === AUTH_ERROR_CATEGORIES.RATE_LIMITED;
+}
+
 function readAuthEvent(value) {
   try {
     return JSON.parse(value || 'null');
@@ -193,7 +210,7 @@ function deliverAuthEvent(message) {
 
   // A sibling callback may have just set the HttpOnly refresh cookie. Never
   // let a prior no-session bootstrap result suppress that recovery attempt.
-  if (message.type === 'LOGIN_COMPLETED') clearRestoreResultCache();
+  if (message.type === 'LOGIN_COMPLETED') invalidateRestoreResultCache();
 
   if (message.eventId) {
     if (seenAuthEventIds.has(message.eventId)) return;
@@ -376,7 +393,7 @@ function broadcastLogoutToTabs(clientKey, reason = 'user_logout') {
 export function login(clientKeyArg, redirectUriArg, options = {}) {
   // ✅ Reset callback state when starting new login
   resetCallbackState();
-  clearRestoreResultCache();
+  invalidateRestoreResultCache();
 
   const {
     clientKey: defaultClientKey,
@@ -423,7 +440,7 @@ export function login(clientKeyArg, redirectUriArg, options = {}) {
 // consumers; new clients should prefer loginAsync().
 export async function loginAsync(clientKeyArg, redirectUriArg, options = {}) {
   resetCallbackState();
-  clearRestoreResultCache();
+  invalidateRestoreResultCache();
 
   const {
     clientKey: defaultClientKey,
@@ -512,6 +529,7 @@ export async function logout(options = {}) {
   clearToken();
   clearIdToken();
   clearRefreshToken();
+  invalidateRestoreResultCache();
   clearLoginLease();
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
@@ -854,15 +872,22 @@ export async function restoreSession(options = {}) {
     restoreResultCache.key === cacheKey &&
     now - restoreResultCache.settledAt < RESTORE_RESULT_CACHE_TTL_MS
   ) {
-    if (restoreResultCache.error && throwOnTransient && !isDefinitiveRefreshFailure(restoreResultCache.error)) {
-      throw restoreResultCache.error;
+    if (restoreResultCache.ok && !getToken()) {
+      clearRestoreResultCache();
+    } else {
+      if (restoreResultCache.error && throwOnTransient && shouldRethrowRestoreFailure(restoreResultCache.error)) {
+        throw restoreResultCache.error;
+      }
+      return restoreResultCache.ok;
     }
-    return restoreResultCache.ok;
   }
 
+  const restoreGeneration = restoreResultCacheGeneration;
   try {
     const token = await refreshToken();
-    restoreResultCache = { key: cacheKey, settledAt: Date.now(), ok: !!token, error: null };
+    if (restoreGeneration === restoreResultCacheGeneration) {
+      restoreResultCache = { key: cacheKey, settledAt: Date.now(), ok: !!token, error: null };
+    }
     return !!token;
   } catch (err) {
     // refreshToken() already cleared local state on a definitive auth
@@ -872,8 +897,10 @@ export async function restoreSession(options = {}) {
     emitAuthDiagnostic('SESSION_RESTORE_FAILED', 'FAILURE', err?.code || 'RESTORE_FAILED', {
       clientKey: getConfig().clientKey,
     });
-    restoreResultCache = { key: cacheKey, settledAt: Date.now(), ok: false, error: err };
-    if (throwOnTransient && !isDefinitiveRefreshFailure(err)) throw err;
+    if (restoreGeneration === restoreResultCacheGeneration) {
+      restoreResultCache = { key: cacheKey, settledAt: Date.now(), ok: false, error: err };
+    }
+    if (throwOnTransient && shouldRethrowRestoreFailure(err)) throw err;
     return false;
   }
 }
@@ -881,7 +908,7 @@ export async function restoreSession(options = {}) {
 // Test and host integration hook: clears only the short-lived bootstrap
 // outcome, never browser credentials or the server session.
 export function resetRestoreSessionCache() {
-  clearRestoreResultCache();
+  invalidateRestoreResultCache();
 }
 
 export async function validateCurrentSession() {

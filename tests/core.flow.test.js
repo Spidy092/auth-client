@@ -400,6 +400,25 @@ test('SSO logout revokes local state, sends scope, and follows Keycloak logout',
   assert.equal(location.replaced, 'https://keycloak.example/logout?sid=s-1');
 });
 
+test('logout invalidates a cached restore success before the next bootstrap', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  let refreshCalls = 0;
+  globalThis.fetch = async (url) => {
+    if (url.includes('/refresh/')) {
+      refreshCalls += 1;
+      return response({ access_token: `access-${refreshCalls}` });
+    }
+    return response({ keycloakLogoutUrl: 'https://keycloak.example/logout?sid=s-logout' });
+  };
+
+  assert.equal(await core.restoreSession(), true);
+  await core.logout();
+  assert.equal(token.getToken(), null);
+  assert.equal(await core.restoreSession(), true);
+  assert.equal(refreshCalls, 2);
+});
+
 test('SSO logout uses the auth-service front-channel fallback when the POST fails', async () => {
   resetBrowser();
   configure();
@@ -628,4 +647,43 @@ test('LOGIN_COMPLETED invalidates a prior no-session bootstrap result', async ()
   assert.equal(fetchCalls, 2);
   assert.equal(token.getToken(), 'access-after-sibling-login');
   unsubscribe();
+});
+
+test('LOGIN_COMPLETED prevents an in-flight restore from writing stale cache state', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  const unsubscribe = core.subscribeToAuthEvents(() => {});
+  let releaseFirstRefresh;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    if (fetchCalls === 1) {
+      return new Promise((resolve) => {
+        releaseFirstRefresh = () => resolve(response({ error: 'temporarily unavailable' }, { status: 503, ok: false }));
+      });
+    }
+    return response({ access_token: 'access-after-completion' });
+  };
+
+  const firstRestore = core.restoreSession({ throwOnTransient: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  const channel = broadcastChannels[0];
+  assert.ok(channel, 'expected the restore path to create an auth event channel');
+  channel.onmessage({ data: { type: 'LOGIN_COMPLETED', clientKey: 'pms', eventId: 'event-generation-1' } });
+  releaseFirstRefresh();
+
+  await assert.rejects(firstRestore, (error) => error.status === 503);
+  assert.equal(await core.restoreSession(), true);
+  assert.equal(fetchCalls, 2);
+  assert.equal(token.getToken(), 'access-after-completion');
+  unsubscribe();
+});
+
+test('restoreSession returns false for unknown failures even when transient errors are requested', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  globalThis.fetch = async () => response({ error: 'unexpected auth response' }, { status: 400, ok: false });
+
+  assert.equal(await core.restoreSession({ throwOnTransient: true }), false);
+  assert.equal(await core.restoreSession({ throwOnTransient: true }), false);
 });

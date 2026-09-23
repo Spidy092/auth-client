@@ -22,6 +22,17 @@ test('classifies rate-limit responses from status or server code', () => {
   );
 });
 
+test('parses Retry-After HTTP dates into remaining seconds', () => {
+  const retryAt = new Date(Date.now() + 60_000).toUTCString();
+  const metadata = getAuthErrorMetadata({
+    status: 429,
+    response: { headers: { get: (name) => name === 'retry-after' ? retryAt : null } },
+  });
+
+  assert.ok(metadata.retryAfterSeconds >= 59);
+  assert.ok(metadata.retryAfterSeconds <= 60);
+});
+
 test('classifies expired provider attempts without exposing provider-specific parsing to clients', () => {
   const metadata = getAuthErrorMetadata({ message: 'Your login attempt timed out.' });
   assert.equal(metadata.category, AUTH_ERROR_CATEGORIES.SESSION_EXPIRED);
