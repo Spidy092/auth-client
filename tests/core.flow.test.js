@@ -256,6 +256,45 @@ test('subscribers receive storage events when BroadcastChannel is unavailable', 
   unsubscribe();
 });
 
+test('subscribers recover a missed LOGIN_COMPLETED from the durable event record', async () => {
+  resetBrowser();
+  configure();
+  const received = [];
+  const unsubscribe = core.subscribeToAuthEvents((event) => received.push(event));
+  const event = {
+    type: 'LOGIN_COMPLETED',
+    clientKey: 'pms',
+    eventId: 'polled-login-completed-1',
+    issuedAt: Date.now() - 31_000,
+  };
+
+  // Simulate a sibling tab writing the event when this tab missed both the
+  // BroadcastChannel delivery and the browser storage notification.
+  storage.local.setItem('auth_platform_sso_event', JSON.stringify(event));
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+
+  assert.deepEqual(received, [event]);
+  unsubscribe();
+});
+
+test('a new subscriber replays only a recent LOGIN_COMPLETED event', () => {
+  resetBrowser();
+  configure();
+  const event = {
+    type: 'LOGIN_COMPLETED',
+    clientKey: 'pms',
+    eventId: 'replayed-login-completed-1',
+    issuedAt: Date.now(),
+  };
+  storage.local.setItem('auth_platform_sso_event', JSON.stringify(event));
+
+  const received = [];
+  const unsubscribe = core.subscribeToAuthEvents((nextEvent) => received.push(nextEvent));
+
+  assert.deepEqual(received, [event]);
+  unsubscribe();
+});
+
 test('callback rejects provider errors with a stable error code', () => {
   resetBrowser('https://app.example/callback?error=access_denied&error_description=User%20cancelled');
   configure();
@@ -364,6 +403,68 @@ test('cross-tab lock never reuses stale storage when no current session exists',
 
   assert.equal(refreshed, 'fresh-user-token');
   assert.equal(token.getToken(), 'fresh-user-token');
+});
+
+test('logout prevents an in-flight refresh from restoring the signed-out session', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  let releaseRefresh;
+  let refreshCalls = 0;
+  globalThis.fetch = async (url) => {
+    if (url.includes('/refresh/')) {
+      refreshCalls += 1;
+      if (refreshCalls === 1) {
+        return new Promise((resolve) => {
+          releaseRefresh = () => resolve(response({ access_token: 'stale-after-logout' }));
+        });
+      }
+      return response({ access_token: 'access-after-logout' });
+    }
+    return response({ keycloakLogoutUrl: null });
+  };
+
+  const firstRefresh = core.refreshToken();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(releaseRefresh, 'expected the first refresh request to be pending');
+
+  await core.logout();
+  assert.equal(token.getToken(), null);
+  releaseRefresh();
+
+  assert.equal(await firstRefresh, null);
+  assert.equal(token.getToken(), null);
+  assert.equal(await core.restoreSession(), true);
+  assert.equal(token.getToken(), 'access-after-logout');
+});
+
+test('logout prevents a stale cross-tab refresh lock from restoring the signed-out session', async () => {
+  resetBrowser();
+  configure();
+  token.setToken('access-before-logout');
+
+  let releaseLock;
+  Object.defineProperty(globalThis, 'navigator', {
+    value: {
+      locks: {
+        request: async (_name, callback) => new Promise((resolve) => {
+          releaseLock = () => resolve(callback());
+        }),
+      },
+    },
+    writable: true,
+    configurable: true,
+  });
+  globalThis.fetch = async () => response({ keycloakLogoutUrl: null });
+
+  const refresh = core.refreshToken();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(releaseLock, 'expected the refresh lock to be pending');
+
+  await core.logout();
+  releaseLock();
+
+  assert.equal(await refresh, null);
+  assert.equal(token.getToken(), null);
 });
 
 test('refresh clears credentials only for an authentication rejection', async () => {
@@ -600,6 +701,20 @@ test('restoreSession can surface temporary refresh failures without exposing pol
   assert.equal(token.getToken(), null);
 });
 
+test('restoreSession surfaces a status-less network failure when transient errors are requested', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  globalThis.fetch = async () => {
+    throw new TypeError('Failed to fetch');
+  };
+
+  await assert.rejects(
+    () => core.restoreSession({ throwOnTransient: true }),
+    (error) => error instanceof TypeError && error.message === 'Failed to fetch',
+  );
+  assert.equal(token.getToken(), null);
+});
+
 test('restoreSession treats a refresh-lock timeout as retryable even with TOKEN_REFRESH_FAILED code', async () => {
   resetBrowser();
   configure({ legacyTokenTransport: false });
@@ -649,7 +764,7 @@ test('LOGIN_COMPLETED invalidates a prior no-session bootstrap result', async ()
   unsubscribe();
 });
 
-test('LOGIN_COMPLETED prevents an in-flight restore from writing stale cache state', async () => {
+test('LOGIN_COMPLETED prevents an in-flight restore from writing stale session state', async () => {
   resetBrowser();
   configure({ legacyTokenTransport: false });
   const unsubscribe = core.subscribeToAuthEvents(() => {});
@@ -659,7 +774,7 @@ test('LOGIN_COMPLETED prevents an in-flight restore from writing stale cache sta
     fetchCalls += 1;
     if (fetchCalls === 1) {
       return new Promise((resolve) => {
-        releaseFirstRefresh = () => resolve(response({ error: 'temporarily unavailable' }, { status: 503, ok: false }));
+        releaseFirstRefresh = () => resolve(response({ access_token: 'stale-after-completion' }));
       });
     }
     return response({ access_token: 'access-after-completion' });
@@ -672,10 +787,55 @@ test('LOGIN_COMPLETED prevents an in-flight restore from writing stale cache sta
   channel.onmessage({ data: { type: 'LOGIN_COMPLETED', clientKey: 'pms', eventId: 'event-generation-1' } });
   releaseFirstRefresh();
 
-  await assert.rejects(firstRestore, (error) => error.status === 503);
+  assert.equal(await firstRestore, false);
+  assert.equal(token.getToken(), null);
   assert.equal(await core.restoreSession(), true);
   assert.equal(fetchCalls, 2);
   assert.equal(token.getToken(), 'access-after-completion');
+  unsubscribe();
+});
+
+test('a stale refresh cannot clear the newer-generation single-flight promise', async () => {
+  resetBrowser();
+  configure({ legacyTokenTransport: false });
+  const unsubscribe = core.subscribeToAuthEvents(() => {});
+  let releaseFirstRefresh;
+  let releaseSecondRefresh;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    if (fetchCalls === 1) {
+      return new Promise((resolve) => {
+        releaseFirstRefresh = () => resolve(response({ access_token: 'stale-generation-token' }));
+      });
+    }
+    return new Promise((resolve) => {
+      releaseSecondRefresh = () => resolve(response({ access_token: 'current-generation-token' }));
+    });
+  };
+
+  const firstRefresh = core.refreshToken();
+  await new Promise((resolve) => setImmediate(resolve));
+  const channel = broadcastChannels[0];
+  assert.ok(channel, 'expected the refresh path to create an auth event channel');
+  channel.onmessage({ data: { type: 'LOGIN_COMPLETED', clientKey: 'pms', eventId: 'event-generation-2' } });
+
+  const secondRefresh = core.refreshToken();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(releaseFirstRefresh, 'expected the first refresh request to be pending');
+  assert.ok(releaseSecondRefresh, 'expected the second refresh request to be pending');
+  assert.equal(fetchCalls, 2);
+
+  releaseFirstRefresh();
+  assert.equal(await firstRefresh, null);
+
+  const thirdRefresh = core.refreshToken();
+  assert.equal(fetchCalls, 2);
+
+  releaseSecondRefresh();
+  assert.equal(await secondRefresh, 'current-generation-token');
+  assert.equal(await thirdRefresh, 'current-generation-token');
+  assert.equal(token.getToken(), 'current-generation-token');
   unsubscribe();
 });
 

@@ -30,11 +30,14 @@ const LOGOUT_REQUEST_TIMEOUT_MS = 8000;
 
 // Same-origin auth events carry metadata only. Access tokens stay in memory;
 // receivers re-establish their own session through the HttpOnly refresh cookie.
-// BroadcastChannel is the primary transport and the storage key is only a
-// fallback for browsers without BroadcastChannel. Both routes share this
+// BroadcastChannel is the primary transport. The storage record is both a
+// fallback for browsers without BroadcastChannel and a bounded recovery
+// source when a browser notification is missed. Both routes share this
 // delivery/deduplication path so one event cannot be handled twice.
 const AUTH_EVENT_STORAGE_KEY = 'auth_platform_sso_event';
 const AUTH_EVENT_TYPES = new Set(['LOGIN_STARTED', 'LOGIN_COMPLETED', 'LOGOUT', 'SESSION_EXPIRED']);
+const AUTH_EVENT_STORAGE_POLL_INTERVAL_MS = 1000;
+const LOGIN_COMPLETION_REPLAY_TTL_MS = 30 * 1000;
 const LOGIN_LEASE_KEY = 'auth_platform_login_lease';
 const LOGIN_LEASE_TTL_MS = 5 * 60 * 1000;
 const LOGIN_LEASE_LOCK_PREFIX = 'auth-platform-login-lease:';
@@ -54,6 +57,18 @@ const RATE_LIMIT_CODES = new Set([
   'AUTHENTICATION_RATE_LIMITED',
 ]);
 
+const TRANSIENT_TRANSPORT_CODES = new Set([
+  'ECONNABORTED',
+  'ECONNRESET',
+  'EAI_AGAIN',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'ERR_NETWORK',
+  'FETCH_ERROR',
+  'NETWORK_ERROR',
+]);
+
 const DEFAULT_AUTH_ERROR_MESSAGE = 'We could not verify your session right now. Please try again.';
 
 function readErrorStatus(error) {
@@ -71,6 +86,10 @@ function readErrorCode(error) {
 
 function readErrorMessage(error) {
   return String(error?.message ?? error?.response?.data?.message ?? '');
+}
+
+function isStatuslessTransportFailure(error) {
+  return error?.name === 'TypeError' || TRANSIENT_TRANSPORT_CODES.has(readErrorCode(error));
 }
 
 function readRetryAfterSeconds(error) {
@@ -102,7 +121,7 @@ export function getAuthErrorMetadata(error) {
     category = AUTH_ERROR_CATEGORIES.RATE_LIMITED;
   } else if (/authentication session.*(expired|timed out)|login attempt timed out/i.test(searchable)) {
     category = AUTH_ERROR_CATEGORIES.SESSION_EXPIRED;
-  } else if (status === 408 || status >= 500) {
+  } else if (status === 408 || status >= 500 || (status === 0 && isStatuslessTransportFailure(error))) {
     category = AUTH_ERROR_CATEGORIES.TRANSIENT;
   }
 
@@ -137,8 +156,10 @@ export function authErrorToMessage(error, fallback = DEFAULT_AUTH_ERROR_MESSAGE)
 let authEventChannel = null;
 let authEventChannelName = null;
 let authEventStorageListenerInstalled = false;
+let authEventStoragePollTimer = null;
 const authEventListeners = new Set();
 const seenAuthEventIds = new Set();
+const publishedAuthEventIds = new Set();
 
 // A memory-only application normally calls restoreSession() once from its
 // provider and once more from its login boundary. The second call happens
@@ -150,6 +171,7 @@ const seenAuthEventIds = new Set();
 const RESTORE_RESULT_CACHE_TTL_MS = 1000;
 let restoreResultCache = null;
 let restoreResultCacheGeneration = 0;
+let sessionGeneration = 0;
 
 function restoreCacheKey() {
   const { clientKey, authBaseUrl } = getConfig();
@@ -163,6 +185,11 @@ function clearRestoreResultCache() {
 function invalidateRestoreResultCache() {
   restoreResultCache = null;
   restoreResultCacheGeneration += 1;
+}
+
+function invalidateSessionGeneration() {
+  sessionGeneration += 1;
+  invalidateRestoreResultCache();
 }
 
 // Refresh failures have two different meanings to a browser client:
@@ -208,10 +235,6 @@ function readAuthEvent(value) {
 function deliverAuthEvent(message) {
   if (!message || typeof message.type !== 'string' || !AUTH_EVENT_TYPES.has(message.type)) return;
 
-  // A sibling callback may have just set the HttpOnly refresh cookie. Never
-  // let a prior no-session bootstrap result suppress that recovery attempt.
-  if (message.type === 'LOGIN_COMPLETED') invalidateRestoreResultCache();
-
   if (message.eventId) {
     if (seenAuthEventIds.has(message.eventId)) return;
     seenAuthEventIds.add(message.eventId);
@@ -219,6 +242,11 @@ function deliverAuthEvent(message) {
       seenAuthEventIds.delete(seenAuthEventIds.values().next().value);
     }
   }
+
+  // A sibling callback may have just set the HttpOnly refresh cookie. Never
+  // let a prior no-session bootstrap result or in-flight refresh suppress or
+  // overwrite that recovery attempt.
+  if (message.type === 'LOGIN_COMPLETED') invalidateSessionGeneration();
 
   authEventListeners.forEach((listener) => {
     try {
@@ -239,6 +267,45 @@ function closeAuthEventTransport() {
   if (authEventStorageListenerInstalled && typeof window !== 'undefined' && window.removeEventListener) {
     window.removeEventListener('storage', handleAuthEventStorage);
     authEventStorageListenerInstalled = false;
+  }
+}
+
+function pollAuthEventStorage() {
+  if (!authEventListeners.size || typeof localStorage === 'undefined') return;
+
+  try {
+    const event = readAuthEvent(localStorage.getItem(AUTH_EVENT_STORAGE_KEY));
+    if (event?.eventId && publishedAuthEventIds.has(event.eventId)) return;
+    deliverAuthEvent(event);
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+}
+
+function startAuthEventStoragePoll() {
+  if (authEventStoragePollTimer || typeof setInterval !== 'function') return;
+  authEventStoragePollTimer = setInterval(pollAuthEventStorage, AUTH_EVENT_STORAGE_POLL_INTERVAL_MS);
+}
+
+function stopAuthEventStoragePoll() {
+  if (!authEventStoragePollTimer || typeof clearInterval !== 'function') return;
+  clearInterval(authEventStoragePollTimer);
+  authEventStoragePollTimer = null;
+}
+
+function replayRecentLoginCompletion() {
+  if (typeof localStorage === 'undefined') return;
+
+  try {
+    const event = readAuthEvent(localStorage.getItem(AUTH_EVENT_STORAGE_KEY));
+    if (event?.type !== 'LOGIN_COMPLETED' ||
+        (event.eventId && publishedAuthEventIds.has(event.eventId))) return;
+
+    const issuedAt = Number(event.issuedAt);
+    if (!Number.isFinite(issuedAt) || Date.now() - issuedAt > LOGIN_COMPLETION_REPLAY_TTL_MS) return;
+    deliverAuthEvent(event);
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
   }
 }
 
@@ -282,10 +349,15 @@ export function subscribeToAuthEvents(listener) {
   authEventListeners.add(listener);
   getAuthEventChannel();
   installAuthEventStorageListener();
+  startAuthEventStoragePoll();
+  replayRecentLoginCompletion();
 
   return () => {
     authEventListeners.delete(listener);
-    if (!authEventListeners.size) closeAuthEventTransport();
+    if (!authEventListeners.size) {
+      closeAuthEventTransport();
+      stopAuthEventStoragePoll();
+    }
   };
 }
 
@@ -301,6 +373,10 @@ export function publishAuthEvent(type, payload = {}) {
     issuedAt: Date.now(),
   };
   const safeEvent = Object.fromEntries(Object.entries(event).filter(([, value]) => value !== undefined));
+  publishedAuthEventIds.add(safeEvent.eventId);
+  if (publishedAuthEventIds.size > 100) {
+    publishedAuthEventIds.delete(publishedAuthEventIds.values().next().value);
+  }
   const channel = getAuthEventChannel();
 
   try {
@@ -393,7 +469,7 @@ function broadcastLogoutToTabs(clientKey, reason = 'user_logout') {
 export function login(clientKeyArg, redirectUriArg, options = {}) {
   // ✅ Reset callback state when starting new login
   resetCallbackState();
-  invalidateRestoreResultCache();
+  invalidateSessionGeneration();
 
   const {
     clientKey: defaultClientKey,
@@ -440,7 +516,7 @@ export function login(clientKeyArg, redirectUriArg, options = {}) {
 // consumers; new clients should prefer loginAsync().
 export async function loginAsync(clientKeyArg, redirectUriArg, options = {}) {
   resetCallbackState();
-  invalidateRestoreResultCache();
+  invalidateSessionGeneration();
 
   const {
     clientKey: defaultClientKey,
@@ -529,7 +605,7 @@ export async function logout(options = {}) {
   clearToken();
   clearIdToken();
   clearRefreshToken();
-  invalidateRestoreResultCache();
+  invalidateSessionGeneration();
   clearLoginLease();
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
@@ -663,6 +739,7 @@ export function handleCallback() {
   }
 
   if (accessToken) {
+    invalidateSessionGeneration();
     setToken(accessToken);
     if (idToken) setIdToken(idToken);
 
@@ -709,22 +786,25 @@ export function resetCallbackState() {
 }
 
 // ✅ Add refresh lock to prevent concurrent refresh calls
-let refreshInProgress = false;
 let refreshPromise = null;
+let refreshPromiseGeneration = null;
 
 // Coordinate refreshes across tabs of the same application. The in-memory
 // promise above protects one tab; navigator.locks protects multiple tabs on
 // the same origin. Auth-service still remains the final authority and its
 // replay grace handles browsers that do not implement Web Locks.
-async function withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshRequest) {
+async function withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshGeneration, refreshRequest) {
   const lockName = `auth-refresh-${clientKey}`;
   const run = async () => {
+    if (refreshGeneration !== sessionGeneration) return null;
+
     // Another tab may have completed the rotation while this tab was waiting
     // for the lock. Reuse its access token instead of submitting the consumed
     // refresh cookie a second time.
     try {
       const persistedToken = localStorage.getItem('authToken');
       if (tokenBeforeRefresh && persistedToken && persistedToken !== tokenBeforeRefresh) {
+        if (refreshGeneration !== sessionGeneration) return null;
         setToken(persistedToken);
         emitAuthDiagnostic('TOKEN_REFRESH_REUSED_CROSS_TAB', 'SUCCESS', 'CROSS_TAB_ROTATION', {
           clientKey,
@@ -735,6 +815,7 @@ async function withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshReq
       // Storage can be unavailable in privacy-restricted browser contexts.
     }
 
+    if (refreshGeneration !== sessionGeneration) return null;
     return refreshRequest();
   };
 
@@ -747,16 +828,17 @@ async function withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshReq
 
 export async function refreshToken() {
   const { clientKey, authBaseUrl } = getConfig();
+  const refreshGeneration = sessionGeneration;
 
   // ✅ Prevent concurrent refresh calls
-  if (refreshInProgress && refreshPromise) {
+  if (refreshPromise && refreshPromiseGeneration === refreshGeneration) {
     console.log('🔄 Token refresh already in progress, waiting...');
     return refreshPromise;
   }
 
-  refreshInProgress = true;
-  refreshPromise = (async () => {
-    const tokenBeforeRefresh = getToken();
+  const tokenBeforeRefresh = getToken();
+  let nextRefreshPromise;
+  nextRefreshPromise = (async () => {
     const refreshRequest = async () => {
       try {
         // Get stored refresh token (for HTTP development)
@@ -809,11 +891,17 @@ export async function refreshToken() {
           throw new Error('No access token in refresh response');
         }
 
+        // A logout or completed login can replace this refresh generation
+        // while the request is in flight. Never let the stale response restore
+        // a session that the user has already left or replaced.
+        if (refreshGeneration !== sessionGeneration) return null;
+
         // ✅ This will trigger token listeners
         setToken(access_token);
 
         // ✅ Store new refresh token if provided (token rotation)
         if (new_refresh_token) {
+          if (refreshGeneration !== sessionGeneration) return null;
           setRefreshToken(new_refresh_token);
           console.log('🔄 New refresh token stored from rotation');
         }
@@ -834,13 +922,17 @@ export async function refreshToken() {
       }
     };
 
-    return withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshRequest);
+    return withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshGeneration, refreshRequest);
   })().finally(() => {
-    refreshInProgress = false;
-    refreshPromise = null;
+    if (refreshPromise === nextRefreshPromise) {
+      refreshPromise = null;
+      refreshPromiseGeneration = null;
+    }
   });
 
-  return refreshPromise;
+  refreshPromise = nextRefreshPromise;
+  refreshPromiseGeneration = refreshGeneration;
+  return nextRefreshPromise;
 }
 
 // Re-establish the session at application startup (or when a signed-out tab is

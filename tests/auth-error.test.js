@@ -48,6 +48,14 @@ test('keeps temporary transport failures retryable and preserves caller fallback
     AUTH_ERROR_CATEGORIES.TRANSIENT,
   );
   assert.equal(
+    getAuthErrorMetadata(new TypeError('Failed to fetch')).category,
+    AUTH_ERROR_CATEGORIES.TRANSIENT,
+  );
+  assert.equal(
+    getAuthErrorMetadata(new Error('unexpected auth failure')).category,
+    AUTH_ERROR_CATEGORIES.UNKNOWN,
+  );
+  assert.equal(
     authErrorToMessage(new Error('unexpected auth failure'), 'Try again from this app.'),
     'Try again from this app.',
   );
