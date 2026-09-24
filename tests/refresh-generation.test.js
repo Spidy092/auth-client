@@ -18,6 +18,7 @@ const location = {
   origin: 'https://app.example',
   protocol: 'https:',
   search: '',
+  replace(value) { this.href = String(value); },
   toString() { return `${this.origin}${this.search}`; },
 };
 
@@ -96,6 +97,48 @@ test('stale definitive refresh failure cannot clear a replacement session', asyn
     releaseRefresh();
     assert.equal(await staleRefresh, null);
     assert.equal(token.getToken(), 'access-after-login');
+  } finally {
+    unsubscribe();
+  }
+
+});
+
+test('logout ignores a delayed LOGIN_COMPLETED from an older transaction', async () => {
+  localStorage.clear();
+  sessionStorage.clear();
+  token.clearToken();
+  broadcastChannels.length = 0;
+  setConfig({
+    clientKey: 'pms',
+    authBaseUrl: 'https://auth.example/auth',
+    accountUiUrl: 'https://account.example',
+    redirectUri: 'https://app.example/callback',
+    isRouter: false,
+    logoutChannelName: 'auth_platform_sso_channel',
+    legacyTokenTransport: false,
+    persistRefreshToken: false,
+  });
+
+  token.setToken('access-before-logout');
+  const received = [];
+  const unsubscribe = core.subscribeToAuthEvents((event) => received.push(event));
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ keycloakLogoutUrl: null }) });
+
+  try {
+    await core.logout();
+    const channel = broadcastChannels[0];
+    assert.ok(channel, 'expected the auth event channel to exist');
+    channel.onmessage({
+      data: {
+        type: 'LOGIN_COMPLETED',
+        clientKey: 'pms',
+        eventId: 'stale-login-completed',
+        issuedAt: Date.now() - 1_000,
+      },
+    });
+
+    assert.equal(token.getToken(), null);
+    assert.equal(received.some((event) => event.type === 'LOGIN_COMPLETED'), false);
   } finally {
     unsubscribe();
   }

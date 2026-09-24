@@ -117,3 +117,25 @@ test('Web Locks API errors fall back to storage lease acquisition', async () => 
   assert.equal(await core.acquireLoginLeaseAsync('pms'), true);
   assert.equal(core.isLoginLeaseActive(), true);
 });
+
+test('an old callback cannot clear a newer tab takeover lease', () => {
+  reset();
+  const tabB = new MemoryStorage();
+  try {
+    assert.equal(core.acquireLoginLease('pms'), true);
+    const oldOwner = JSON.parse(local.getItem(core.LOGIN_LEASE_KEY)).owner;
+    globalThis.sessionStorage = tabB;
+    core.clearLoginLease({ force: true });
+    assert.equal(core.acquireLoginLease('pms'), true);
+    const newOwner = JSON.parse(local.getItem(core.LOGIN_LEASE_KEY)).owner;
+    assert.notEqual(newOwner, oldOwner);
+    globalThis.sessionStorage = session;
+    core.clearLoginLease();
+    assert.equal(JSON.parse(local.getItem(core.LOGIN_LEASE_KEY)).owner, newOwner);
+    globalThis.sessionStorage = tabB;
+    core.clearLoginLease();
+    assert.equal(local.getItem(core.LOGIN_LEASE_KEY), null);
+  } finally {
+    globalThis.sessionStorage = session;
+  }
+});

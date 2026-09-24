@@ -51,7 +51,9 @@ await auth.loginAsync();
 
 The login lease expires after 5 minutes as a crash-recovery upper bound. It is
 not a user-facing wait: a waiting tab should offer an immediate takeover
-action that calls `auth.clearLoginLease()` before starting a new login.
+action that calls `auth.clearLoginLease({ force: true })` before starting a new
+login. Ordinary callback/error cleanup should call `auth.clearLoginLease()`;
+that owner-safe form cannot remove a newer tab's lease.
 
 ### Handle Callback
 ```js
@@ -67,7 +69,8 @@ auth.logout();
 ```js
 const unsubscribe = auth.subscribeToAuthEvents((event) => {
   if (event.type === 'LOGIN_COMPLETED') {
-    // Re-establish this tab's session with auth.restoreSession().
+    // Re-establish this tab's session with the HttpOnly cookie.
+    auth.restoreSession({ throwOnTransient: true });
   }
 });
 
@@ -103,6 +106,18 @@ restore result. This prevents a provider and a login boundary on the same page
 from issuing duplicate cookie-refresh requests when no session exists. A
 `LOGIN_COMPLETED` event invalidates that result so a sibling tab can restore the
 new HttpOnly-cookie session immediately.
+
+An explicit user action may recover a new cookie session from a signed-out or
+expired login boundary by passing allowAfterLogout: true:
+
+```js
+await auth.restoreSession({ allowAfterLogout: true, throwOnTransient: true });
+```
+
+Do not pass this option during automatic bootstrap. The default boundary is
+deliberate: it prevents an old tab or a stale redirect from silently undoing a
+user-requested logout. The SDK clears the boundary only after a successful
+explicit recovery.
 
 ### Get Token
 ```js
