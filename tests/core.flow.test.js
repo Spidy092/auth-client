@@ -556,6 +556,7 @@ test('client-only logout uses client scope and keeps its fallback local when bac
   assert.equal(fallback.searchParams.get('scope'), 'client');
 });
 
+
 test('logout broadcasts a LOGOUT message to sibling tabs on the configured channel', async () => {
   resetBrowser();
   configure({ logoutChannelName: 'auth_platform_sso_channel' });
@@ -702,6 +703,25 @@ test('explicit logged_out URL suppresses bootstrap refresh without an SDK marker
 
   assert.equal(await core.restoreSession({ throwOnTransient: true }), false);
   assert.equal(refreshCalls, 0);
+});
+
+test('explicit recovery can restore a new cookie session after logout without enabling bootstrap refresh', async () => {
+  resetBrowser('https://app.example/login?logged_out=true&reason=user_logout');
+  configure({ legacyTokenTransport: false });
+  let refreshCalls = 0;
+  globalThis.fetch = async () => {
+    refreshCalls += 1;
+    return response({ access_token: 'new-session-token' });
+  };
+
+  assert.equal(await core.restoreSession(), false);
+  assert.equal(refreshCalls, 0);
+  assert.equal(await core.restoreSession({ allowAfterLogout: true }), true);
+  assert.equal(refreshCalls, 1);
+  assert.equal(token.getToken(), 'new-session-token');
+  assert.equal(await core.restoreSession(), false);
+  location.search = '';
+  assert.equal(await core.restoreSession(), true);
 });
 
 test('restoreSession treats a coded missing session as a definitive logout', async () => {

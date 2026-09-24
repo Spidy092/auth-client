@@ -40,6 +40,7 @@ const LOGOUT_BOUNDARY_KEY = 'auth_platform_logout_boundary';
 const AUTH_EVENT_STORAGE_POLL_INTERVAL_MS = 1000;
 const LOGIN_COMPLETION_REPLAY_TTL_MS = 30 * 1000;
 const LOGIN_LEASE_KEY = 'auth_platform_login_lease';
+const LOGIN_LEASE_OWNER_KEY = 'auth_platform_login_lease_owner';
 const LOGIN_LEASE_TTL_MS = 5 * 60 * 1000;
 const LOGIN_LEASE_LOCK_PREFIX = 'auth-platform-login-lease:';
 
@@ -273,10 +274,20 @@ function clearLogoutBoundary() {
   }
 }
 
+function isStaleLoginCompletion(message) {
+  if (message?.type !== 'LOGIN_COMPLETED') return false;
+  const boundary = readLogoutBoundary();
+  if (!boundary || (boundary.clientKey && boundary.clientKey !== message.clientKey)) return false;
+  const issuedAt = Number(message.issuedAt);
+  const boundaryCreatedAt = Number(boundary.createdAt);
+  return Number.isFinite(issuedAt) && Number.isFinite(boundaryCreatedAt) && issuedAt < boundaryCreatedAt;
+}
+
 function deliverAuthEvent(message) {
   if (!message || typeof message.type !== 'string' || !AUTH_EVENT_TYPES.has(message.type)) return;
 
   if (message.type === 'LOGOUT' && isLogoutBoundaryActive(message.clientKey)) return;
+  if (isStaleLoginCompletion(message)) return;
 
   if (message.eventId) {
     if (seenAuthEventIds.has(message.eventId)) return;
@@ -492,7 +503,14 @@ export function acquireLoginLease(clientKey) {
     const owner = `${createdAt}-${Math.random().toString(36).slice(2)}`;
     localStorage.setItem(LOGIN_LEASE_KEY, JSON.stringify({ clientKey, createdAt, owner }));
     const acquired = readAuthEvent(localStorage.getItem(LOGIN_LEASE_KEY))?.owner === owner;
-    if (acquired) clearLogoutBoundary();
+    if (acquired) {
+      try {
+        sessionStorage.setItem(LOGIN_LEASE_OWNER_KEY, owner);
+      } catch {
+        // Restricted tab storage must not block sign-in.
+      }
+      clearLogoutBoundary();
+    }
     return acquired;
   } catch {
     // Storage restrictions must not prevent a user from authenticating.
@@ -528,11 +546,26 @@ export async function acquireLoginLeaseAsync(clientKey) {
   }
 }
 
-export function clearLoginLease() {
+export function clearLoginLease({ force = false } = {}) {
   try {
-    localStorage.removeItem(LOGIN_LEASE_KEY);
+    const lease = readAuthEvent(localStorage.getItem(LOGIN_LEASE_KEY));
+    let owner = null;
+    try {
+      owner = sessionStorage.getItem(LOGIN_LEASE_OWNER_KEY);
+    } catch {
+      // A missing tab marker cannot prove ownership of a newer lease.
+    }
+    if (force || !lease?.owner || lease.owner === owner || !readLoginLease()) {
+      localStorage.removeItem(LOGIN_LEASE_KEY);
+    }
   } catch {
     // Ignore unavailable storage during callback/error cleanup.
+  } finally {
+    try {
+      sessionStorage.removeItem(LOGIN_LEASE_OWNER_KEY);
+    } catch {
+      // Ignore unavailable tab storage.
+    }
   }
 }
 
@@ -687,7 +720,7 @@ export async function logout(options = {}) {
   clearIdToken();
   clearRefreshToken();
   invalidateSessionGeneration();
-  clearLoginLease();
+  clearLoginLease({ force: true });
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
 
@@ -1044,19 +1077,22 @@ export async function refreshToken() {
 //     matching refreshToken()'s own "don't logout on transient failure" rule.
 export async function restoreSession(options = {}) {
   const throwOnTransient = options?.throwOnTransient === true;
-  if (isLogoutBoundaryActive()) {
+  const logoutBoundaryActive = isLogoutBoundaryActive();
+  const recoveringAfterLogout = logoutBoundaryActive && options?.allowAfterLogout === true;
+  if (logoutBoundaryActive && !recoveringAfterLogout) {
     clearRestoreResultCache();
     return false;
   }
   const current = getToken();
   // Treat a token with >10s of life left as usable, matching isAuthenticated().
-  if (current && getTimeUntilExpiry(current) > 10) {
+  if (!recoveringAfterLogout && current && getTimeUntilExpiry(current) > 10) {
     return true;
   }
 
   const now = Date.now();
   const cacheKey = restoreCacheKey();
   if (
+    !recoveringAfterLogout &&
     restoreResultCache &&
     restoreResultCache.key === cacheKey &&
     now - restoreResultCache.settledAt < RESTORE_RESULT_CACHE_TTL_MS
@@ -1074,6 +1110,7 @@ export async function restoreSession(options = {}) {
   const restoreGeneration = restoreResultCacheGeneration;
   try {
     const token = await refreshToken();
+    if (token && recoveringAfterLogout) clearLogoutBoundary();
     if (restoreGeneration === restoreResultCacheGeneration) {
       restoreResultCache = { key: cacheKey, settledAt: Date.now(), ok: !!token, error: null };
     }
