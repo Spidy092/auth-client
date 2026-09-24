@@ -36,6 +36,7 @@ const core = await import('../core.js');
 function reset() {
   local.clear();
   session.clear();
+  core.resetRestoreSessionCache();
   core.clearLoginLease();
   core.resetCallbackState();
   Object.defineProperty(globalThis, 'navigator', {
@@ -116,6 +117,36 @@ test('Web Locks API errors fall back to storage lease acquisition', async () => 
 
   assert.equal(await core.acquireLoginLeaseAsync('pms'), true);
   assert.equal(core.isLoginLeaseActive(), true);
+});
+
+test('successful session restore releases the current tab lease', async () => {
+  reset();
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ access_token: 'restored-access-token' }),
+  });
+
+  assert.equal(core.acquireLoginLease('pms'), true);
+  assert.equal(await core.restoreSession(), true);
+  assert.equal(local.getItem(core.LOGIN_LEASE_KEY), null);
+});
+
+test('session restore cannot clear another tab lease', async () => {
+  reset();
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ access_token: 'restored-sibling-session' }),
+  });
+  local.setItem(core.LOGIN_LEASE_KEY, JSON.stringify({
+    clientKey: 'pms',
+    createdAt: Date.now(),
+    owner: 'another-tab',
+  }));
+
+  assert.equal(await core.restoreSession(), true);
+  assert.notEqual(local.getItem(core.LOGIN_LEASE_KEY), null);
 });
 
 test('an old callback cannot clear a newer tab takeover lease', () => {

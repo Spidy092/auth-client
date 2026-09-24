@@ -1086,6 +1086,7 @@ export async function restoreSession(options = {}) {
   const current = getToken();
   // Treat a token with >10s of life left as usable, matching isAuthenticated().
   if (!recoveringAfterLogout && current && getTimeUntilExpiry(current) > 10) {
+    clearLoginLease();
     return true;
   }
 
@@ -1110,7 +1111,14 @@ export async function restoreSession(options = {}) {
   const restoreGeneration = restoreResultCacheGeneration;
   try {
     const token = await refreshToken();
-    if (token && recoveringAfterLogout) clearLogoutBoundary();
+    if (token) {
+      if (recoveringAfterLogout) clearLogoutBoundary();
+      // A successful restore proves that this tab has a usable session. If it
+      // owns a lease left by an earlier redirect, release that lease before
+      // the next login attempt. clearLoginLease() is owner-safe, so a tab
+      // restoring a sibling's session cannot remove the sibling's lease.
+      clearLoginLease();
+    }
     if (restoreGeneration === restoreResultCacheGeneration) {
       restoreResultCache = { key: cacheKey, settledAt: Date.now(), ok: !!token, error: null };
     }
