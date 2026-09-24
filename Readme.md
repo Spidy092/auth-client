@@ -109,6 +109,21 @@ new HttpOnly-cookie session immediately.
 const token = auth.getToken();
 ```
 
+### Refresh Token
+```js
+const token = await auth.refreshToken();
+if (!token) {
+  // The session changed while this refresh was in flight. Do not build an
+  // Authorization header from this result; re-read auth state or retry through
+  // the SDK API client after the current session is established.
+}
+```
+
+`auth.refreshToken()` returns `Promise<string | null>`. It resolves to `null`
+when a session change, including login initiation, logout, or completed login,
+invalidates the refresh that was already in flight. Network and authentication
+failures reject with the original error.
+
 ---
 
 ## 🧠 React Integration

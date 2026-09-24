@@ -30,11 +30,15 @@ const LOGOUT_REQUEST_TIMEOUT_MS = 8000;
 
 // Same-origin auth events carry metadata only. Access tokens stay in memory;
 // receivers re-establish their own session through the HttpOnly refresh cookie.
-// BroadcastChannel is the primary transport and the storage key is only a
-// fallback for browsers without BroadcastChannel. Both routes share this
+// BroadcastChannel is the primary transport. The storage record is both a
+// fallback for browsers without BroadcastChannel and a bounded recovery
+// source when a browser notification is missed. Both routes share this
 // delivery/deduplication path so one event cannot be handled twice.
 const AUTH_EVENT_STORAGE_KEY = 'auth_platform_sso_event';
 const AUTH_EVENT_TYPES = new Set(['LOGIN_STARTED', 'LOGIN_COMPLETED', 'LOGOUT', 'SESSION_EXPIRED']);
+const LOGOUT_BOUNDARY_KEY = 'auth_platform_logout_boundary';
+const AUTH_EVENT_STORAGE_POLL_INTERVAL_MS = 1000;
+const LOGIN_COMPLETION_REPLAY_TTL_MS = 30 * 1000;
 const LOGIN_LEASE_KEY = 'auth_platform_login_lease';
 const LOGIN_LEASE_TTL_MS = 5 * 60 * 1000;
 const LOGIN_LEASE_LOCK_PREFIX = 'auth-platform-login-lease:';
@@ -52,6 +56,18 @@ const RATE_LIMIT_CODES = new Set([
   'RATE_LIMITED',
   'BRUTE_FORCE_DETECTED',
   'AUTHENTICATION_RATE_LIMITED',
+]);
+
+const TRANSIENT_TRANSPORT_CODES = new Set([
+  'ECONNABORTED',
+  'ECONNRESET',
+  'EAI_AGAIN',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'ERR_NETWORK',
+  'FETCH_ERROR',
+  'NETWORK_ERROR',
 ]);
 
 const DEFAULT_AUTH_ERROR_MESSAGE = 'We could not verify your session right now. Please try again.';
@@ -73,10 +89,19 @@ function readErrorMessage(error) {
   return String(error?.message ?? error?.response?.data?.message ?? '');
 }
 
+function isStatuslessTransportFailure(error) {
+  return error?.name === 'TypeError' || TRANSIENT_TRANSPORT_CODES.has(readErrorCode(error));
+}
+
 function readRetryAfterSeconds(error) {
   const value = error?.retryAfterSeconds ?? error?.response?.headers?.get?.('retry-after');
   const seconds = Number(value);
-  return Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds) : null;
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds);
+
+  const retryAt = Date.parse(String(value ?? ''));
+  if (!Number.isFinite(retryAt)) return null;
+
+  return Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
 }
 
 /**
@@ -97,7 +122,7 @@ export function getAuthErrorMetadata(error) {
     category = AUTH_ERROR_CATEGORIES.RATE_LIMITED;
   } else if (/authentication session.*(expired|timed out)|login attempt timed out/i.test(searchable)) {
     category = AUTH_ERROR_CATEGORIES.SESSION_EXPIRED;
-  } else if (status === 408 || status >= 500) {
+  } else if (status === 408 || status >= 500 || (status === 0 && isStatuslessTransportFailure(error))) {
     category = AUTH_ERROR_CATEGORIES.TRANSIENT;
   }
 
@@ -132,8 +157,12 @@ export function authErrorToMessage(error, fallback = DEFAULT_AUTH_ERROR_MESSAGE)
 let authEventChannel = null;
 let authEventChannelName = null;
 let authEventStorageListenerInstalled = false;
+let authEventStoragePollTimer = null;
+let lastPolledAuthEventRecord = null;
+let authEventStoragePollBaselineReady = false;
 const authEventListeners = new Set();
 const seenAuthEventIds = new Set();
+const publishedAuthEventIds = new Set();
 
 // A memory-only application normally calls restoreSession() once from its
 // provider and once more from its login boundary. The second call happens
@@ -144,6 +173,8 @@ const seenAuthEventIds = new Set();
 // session cache or an authorization decision.
 const RESTORE_RESULT_CACHE_TTL_MS = 1000;
 let restoreResultCache = null;
+let restoreResultCacheGeneration = 0;
+let sessionGeneration = 0;
 
 function restoreCacheKey() {
   const { clientKey, authBaseUrl } = getConfig();
@@ -152,6 +183,16 @@ function restoreCacheKey() {
 
 function clearRestoreResultCache() {
   restoreResultCache = null;
+}
+
+function invalidateRestoreResultCache() {
+  restoreResultCache = null;
+  restoreResultCacheGeneration += 1;
+}
+
+function invalidateSessionGeneration() {
+  sessionGeneration += 1;
+  invalidateRestoreResultCache();
 }
 
 // Refresh failures have two different meanings to a browser client:
@@ -180,6 +221,12 @@ function isDefinitiveRefreshFailure(error) {
     message.includes('refresh failed: 403');
 }
 
+function shouldRethrowRestoreFailure(error) {
+  const { category } = getAuthErrorMetadata(error);
+  return category === AUTH_ERROR_CATEGORIES.TRANSIENT ||
+    category === AUTH_ERROR_CATEGORIES.RATE_LIMITED;
+}
+
 function readAuthEvent(value) {
   try {
     return JSON.parse(value || 'null');
@@ -188,12 +235,48 @@ function readAuthEvent(value) {
   }
 }
 
+function readLogoutBoundary() {
+  try {
+    return readAuthEvent(sessionStorage.getItem(LOGOUT_BOUNDARY_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function isLogoutBoundaryActive(clientKey = getConfig().clientKey) {
+  try {
+    if (new URLSearchParams(window.location.search).get('logged_out') === 'true') return true;
+  } catch {
+    // Non-browser consumers may not provide a location.
+  }
+  const boundary = readLogoutBoundary();
+  return Boolean(boundary && (!boundary.clientKey || boundary.clientKey === clientKey));
+}
+
+function markLogoutBoundary(clientKey, reason = 'user_logout') {
+  try {
+    sessionStorage.setItem(LOGOUT_BOUNDARY_KEY, JSON.stringify({
+      clientKey,
+      reason,
+      createdAt: Date.now(),
+    }));
+  } catch {
+    // Restricted storage must not prevent logout.
+  }
+}
+
+function clearLogoutBoundary() {
+  try {
+    sessionStorage.removeItem(LOGOUT_BOUNDARY_KEY);
+  } catch {
+    // Restricted storage must not prevent login.
+  }
+}
+
 function deliverAuthEvent(message) {
   if (!message || typeof message.type !== 'string' || !AUTH_EVENT_TYPES.has(message.type)) return;
 
-  // A sibling callback may have just set the HttpOnly refresh cookie. Never
-  // let a prior no-session bootstrap result suppress that recovery attempt.
-  if (message.type === 'LOGIN_COMPLETED') clearRestoreResultCache();
+  if (message.type === 'LOGOUT' && isLogoutBoundaryActive(message.clientKey)) return;
 
   if (message.eventId) {
     if (seenAuthEventIds.has(message.eventId)) return;
@@ -201,6 +284,17 @@ function deliverAuthEvent(message) {
     if (seenAuthEventIds.size > 100) {
       seenAuthEventIds.delete(seenAuthEventIds.values().next().value);
     }
+  }
+
+  // A sibling callback may have just set the HttpOnly refresh cookie. Never
+  // let a prior no-session bootstrap result or in-flight refresh suppress or
+  // overwrite that recovery attempt.
+  if (message.type === 'LOGOUT') {
+    markLogoutBoundary(message.clientKey, message.reason);
+    invalidateSessionGeneration();
+  } else if (message.type === 'LOGIN_COMPLETED') {
+    clearLogoutBoundary();
+    invalidateSessionGeneration();
   }
 
   authEventListeners.forEach((listener) => {
@@ -222,6 +316,63 @@ function closeAuthEventTransport() {
   if (authEventStorageListenerInstalled && typeof window !== 'undefined' && window.removeEventListener) {
     window.removeEventListener('storage', handleAuthEventStorage);
     authEventStorageListenerInstalled = false;
+  }
+}
+
+function pollAuthEventStorage() {
+  if (!authEventListeners.size || typeof localStorage === 'undefined') return;
+
+  try {
+    const raw = localStorage.getItem(AUTH_EVENT_STORAGE_KEY);
+    if (!authEventStoragePollBaselineReady) {
+      lastPolledAuthEventRecord = raw;
+      authEventStoragePollBaselineReady = true;
+      return;
+    }
+    if (raw === lastPolledAuthEventRecord) return;
+    lastPolledAuthEventRecord = raw;
+
+    const event = readAuthEvent(raw);
+    if (event?.eventId && publishedAuthEventIds.has(event.eventId)) return;
+    deliverAuthEvent(event);
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+}
+
+function startAuthEventStoragePoll() {
+  if (authEventStoragePollTimer || typeof setInterval !== 'function') return;
+  try {
+    lastPolledAuthEventRecord = localStorage.getItem(AUTH_EVENT_STORAGE_KEY);
+    authEventStoragePollBaselineReady = true;
+  } catch {
+    lastPolledAuthEventRecord = null;
+    authEventStoragePollBaselineReady = false;
+  }
+  authEventStoragePollTimer = setInterval(pollAuthEventStorage, AUTH_EVENT_STORAGE_POLL_INTERVAL_MS);
+}
+
+function stopAuthEventStoragePoll() {
+  if (!authEventStoragePollTimer || typeof clearInterval !== 'function') return;
+  clearInterval(authEventStoragePollTimer);
+  authEventStoragePollTimer = null;
+  lastPolledAuthEventRecord = null;
+  authEventStoragePollBaselineReady = false;
+}
+
+function replayRecentLoginCompletion() {
+  if (typeof localStorage === 'undefined') return;
+
+  try {
+    const event = readAuthEvent(localStorage.getItem(AUTH_EVENT_STORAGE_KEY));
+    if (event?.type !== 'LOGIN_COMPLETED' ||
+        (event.eventId && publishedAuthEventIds.has(event.eventId))) return;
+
+    const issuedAt = Number(event.issuedAt);
+    if (!Number.isFinite(issuedAt) || Date.now() - issuedAt > LOGIN_COMPLETION_REPLAY_TTL_MS) return;
+    deliverAuthEvent(event);
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
   }
 }
 
@@ -265,10 +416,15 @@ export function subscribeToAuthEvents(listener) {
   authEventListeners.add(listener);
   getAuthEventChannel();
   installAuthEventStorageListener();
+  startAuthEventStoragePoll();
+  replayRecentLoginCompletion();
 
   return () => {
     authEventListeners.delete(listener);
-    if (!authEventListeners.size) closeAuthEventTransport();
+    if (!authEventListeners.size) {
+      closeAuthEventTransport();
+      stopAuthEventStoragePoll();
+    }
   };
 }
 
@@ -284,6 +440,20 @@ export function publishAuthEvent(type, payload = {}) {
     issuedAt: Date.now(),
   };
   const safeEvent = Object.fromEntries(Object.entries(event).filter(([, value]) => value !== undefined));
+  publishedAuthEventIds.add(safeEvent.eventId);
+  if (publishedAuthEventIds.size > 100) {
+    publishedAuthEventIds.delete(publishedAuthEventIds.values().next().value);
+  }
+
+  if (type === 'LOGOUT') {
+    markLogoutBoundary(safeEvent.clientKey, safeEvent.reason);
+    invalidateSessionGeneration();
+  } else if (type === 'LOGIN_STARTED') {
+    clearLogoutBoundary();
+  } else if (type === 'LOGIN_COMPLETED') {
+    clearLogoutBoundary();
+    invalidateSessionGeneration();
+  }
   const channel = getAuthEventChannel();
 
   try {
@@ -321,9 +491,12 @@ export function acquireLoginLease(clientKey) {
     const createdAt = Date.now();
     const owner = `${createdAt}-${Math.random().toString(36).slice(2)}`;
     localStorage.setItem(LOGIN_LEASE_KEY, JSON.stringify({ clientKey, createdAt, owner }));
-    return readAuthEvent(localStorage.getItem(LOGIN_LEASE_KEY))?.owner === owner;
+    const acquired = readAuthEvent(localStorage.getItem(LOGIN_LEASE_KEY))?.owner === owner;
+    if (acquired) clearLogoutBoundary();
+    return acquired;
   } catch {
     // Storage restrictions must not prevent a user from authenticating.
+    clearLogoutBoundary();
     return true;
   }
 }
@@ -376,7 +549,7 @@ function broadcastLogoutToTabs(clientKey, reason = 'user_logout') {
 export function login(clientKeyArg, redirectUriArg, options = {}) {
   // ✅ Reset callback state when starting new login
   resetCallbackState();
-  clearRestoreResultCache();
+  invalidateSessionGeneration();
 
   const {
     clientKey: defaultClientKey,
@@ -423,7 +596,7 @@ export function login(clientKeyArg, redirectUriArg, options = {}) {
 // consumers; new clients should prefer loginAsync().
 export async function loginAsync(clientKeyArg, redirectUriArg, options = {}) {
   resetCallbackState();
-  clearRestoreResultCache();
+  invalidateSessionGeneration();
 
   const {
     clientKey: defaultClientKey,
@@ -509,9 +682,11 @@ export async function logout(options = {}) {
   });
   emitAuthDiagnostic('LOGOUT_INITIATED', 'PENDING', 'NONE', { clientKey });
 
+  markLogoutBoundary(clientKey, 'user_logout');
   clearToken();
   clearIdToken();
   clearRefreshToken();
+  invalidateSessionGeneration();
   clearLoginLease();
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
@@ -629,6 +804,7 @@ export function handleCallback() {
   callbackProcessed = true;
   clearLoginLock();
   clearLoginLease();
+  clearLogoutBoundary();
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
 
@@ -645,6 +821,7 @@ export function handleCallback() {
   }
 
   if (accessToken) {
+    invalidateSessionGeneration();
     setToken(accessToken);
     if (idToken) setIdToken(idToken);
 
@@ -691,22 +868,25 @@ export function resetCallbackState() {
 }
 
 // ✅ Add refresh lock to prevent concurrent refresh calls
-let refreshInProgress = false;
 let refreshPromise = null;
+let refreshPromiseGeneration = null;
 
 // Coordinate refreshes across tabs of the same application. The in-memory
 // promise above protects one tab; navigator.locks protects multiple tabs on
 // the same origin. Auth-service still remains the final authority and its
 // replay grace handles browsers that do not implement Web Locks.
-async function withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshRequest) {
+async function withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshGeneration, refreshRequest) {
   const lockName = `auth-refresh-${clientKey}`;
   const run = async () => {
+    if (refreshGeneration !== sessionGeneration) return null;
+
     // Another tab may have completed the rotation while this tab was waiting
     // for the lock. Reuse its access token instead of submitting the consumed
     // refresh cookie a second time.
     try {
       const persistedToken = localStorage.getItem('authToken');
       if (tokenBeforeRefresh && persistedToken && persistedToken !== tokenBeforeRefresh) {
+        if (refreshGeneration !== sessionGeneration) return null;
         setToken(persistedToken);
         emitAuthDiagnostic('TOKEN_REFRESH_REUSED_CROSS_TAB', 'SUCCESS', 'CROSS_TAB_ROTATION', {
           clientKey,
@@ -717,6 +897,7 @@ async function withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshReq
       // Storage can be unavailable in privacy-restricted browser contexts.
     }
 
+    if (refreshGeneration !== sessionGeneration) return null;
     return refreshRequest();
   };
 
@@ -727,18 +908,27 @@ async function withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshReq
   return run();
 }
 
+/**
+ * Refresh the access token through the current browser session.
+ *
+ * @returns {Promise<string | null>} The refreshed access token, or null when
+ * the request became stale because the session changed while it was in flight.
+ * Definitive and transient refresh failures still reject with their original
+ * error so callers can apply the SDK's error policy.
+ */
 export async function refreshToken() {
   const { clientKey, authBaseUrl } = getConfig();
+  const refreshGeneration = sessionGeneration;
 
   // ✅ Prevent concurrent refresh calls
-  if (refreshInProgress && refreshPromise) {
+  if (refreshPromise && refreshPromiseGeneration === refreshGeneration) {
     console.log('🔄 Token refresh already in progress, waiting...');
     return refreshPromise;
   }
 
-  refreshInProgress = true;
-  refreshPromise = (async () => {
-    const tokenBeforeRefresh = getToken();
+  const tokenBeforeRefresh = getToken();
+  let nextRefreshPromise;
+  nextRefreshPromise = (async () => {
     const refreshRequest = async () => {
       try {
         // Get stored refresh token (for HTTP development)
@@ -791,11 +981,17 @@ export async function refreshToken() {
           throw new Error('No access token in refresh response');
         }
 
+        // A logout or completed login can replace this refresh generation
+        // while the request is in flight. Never let the stale response restore
+        // a session that the user has already left or replaced.
+        if (refreshGeneration !== sessionGeneration) return null;
+
         // ✅ This will trigger token listeners
         setToken(access_token);
 
         // ✅ Store new refresh token if provided (token rotation)
         if (new_refresh_token) {
+          if (refreshGeneration !== sessionGeneration) return null;
           setRefreshToken(new_refresh_token);
           console.log('🔄 New refresh token stored from rotation');
         }
@@ -805,6 +1001,9 @@ export async function refreshToken() {
         return access_token;
       } catch (err) {
         console.error('❌ Token refresh error:', err);
+        // A definitive failure from an older generation must not clear a
+        // session that a callback or sibling tab established afterward.
+        if (refreshGeneration !== sessionGeneration) return null;
         // Only clear tokens on definitive auth failure (server explicitly rejected).
         // Network errors / timeouts should NOT clear tokens — the session may still
         // be valid and the next attempt may succeed.
@@ -816,13 +1015,17 @@ export async function refreshToken() {
       }
     };
 
-    return withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshRequest);
+    return withCrossTabRefreshLock(clientKey, tokenBeforeRefresh, refreshGeneration, refreshRequest);
   })().finally(() => {
-    refreshInProgress = false;
-    refreshPromise = null;
+    if (refreshPromise === nextRefreshPromise) {
+      refreshPromise = null;
+      refreshPromiseGeneration = null;
+    }
   });
 
-  return refreshPromise;
+  refreshPromise = nextRefreshPromise;
+  refreshPromiseGeneration = refreshGeneration;
+  return nextRefreshPromise;
 }
 
 // Re-establish the session at application startup (or when a signed-out tab is
@@ -841,6 +1044,10 @@ export async function refreshToken() {
 //     matching refreshToken()'s own "don't logout on transient failure" rule.
 export async function restoreSession(options = {}) {
   const throwOnTransient = options?.throwOnTransient === true;
+  if (isLogoutBoundaryActive()) {
+    clearRestoreResultCache();
+    return false;
+  }
   const current = getToken();
   // Treat a token with >10s of life left as usable, matching isAuthenticated().
   if (current && getTimeUntilExpiry(current) > 10) {
@@ -854,15 +1061,22 @@ export async function restoreSession(options = {}) {
     restoreResultCache.key === cacheKey &&
     now - restoreResultCache.settledAt < RESTORE_RESULT_CACHE_TTL_MS
   ) {
-    if (restoreResultCache.error && throwOnTransient && !isDefinitiveRefreshFailure(restoreResultCache.error)) {
-      throw restoreResultCache.error;
+    if (restoreResultCache.ok && !getToken()) {
+      clearRestoreResultCache();
+    } else {
+      if (restoreResultCache.error && throwOnTransient && shouldRethrowRestoreFailure(restoreResultCache.error)) {
+        throw restoreResultCache.error;
+      }
+      return restoreResultCache.ok;
     }
-    return restoreResultCache.ok;
   }
 
+  const restoreGeneration = restoreResultCacheGeneration;
   try {
     const token = await refreshToken();
-    restoreResultCache = { key: cacheKey, settledAt: Date.now(), ok: !!token, error: null };
+    if (restoreGeneration === restoreResultCacheGeneration) {
+      restoreResultCache = { key: cacheKey, settledAt: Date.now(), ok: !!token, error: null };
+    }
     return !!token;
   } catch (err) {
     // refreshToken() already cleared local state on a definitive auth
@@ -872,8 +1086,10 @@ export async function restoreSession(options = {}) {
     emitAuthDiagnostic('SESSION_RESTORE_FAILED', 'FAILURE', err?.code || 'RESTORE_FAILED', {
       clientKey: getConfig().clientKey,
     });
-    restoreResultCache = { key: cacheKey, settledAt: Date.now(), ok: false, error: err };
-    if (throwOnTransient && !isDefinitiveRefreshFailure(err)) throw err;
+    if (restoreGeneration === restoreResultCacheGeneration) {
+      restoreResultCache = { key: cacheKey, settledAt: Date.now(), ok: false, error: err };
+    }
+    if (throwOnTransient && shouldRethrowRestoreFailure(err)) throw err;
     return false;
   }
 }
@@ -881,7 +1097,7 @@ export async function restoreSession(options = {}) {
 // Test and host integration hook: clears only the short-lived bootstrap
 // outcome, never browser credentials or the server session.
 export function resetRestoreSessionCache() {
-  clearRestoreResultCache();
+  invalidateRestoreResultCache();
 }
 
 export async function validateCurrentSession() {
