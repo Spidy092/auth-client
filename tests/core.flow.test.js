@@ -433,6 +433,9 @@ test('logout prevents an in-flight refresh from restoring the signed-out session
 
   assert.equal(await firstRefresh, null);
   assert.equal(token.getToken(), null);
+  assert.equal(await core.restoreSession(), false);
+  assert.equal(refreshCalls, 1);
+  assert.equal(core.acquireLoginLease('pms'), true);
   assert.equal(await core.restoreSession(), true);
   assert.equal(token.getToken(), 'access-after-logout');
 });
@@ -516,6 +519,8 @@ test('logout invalidates a cached restore success before the next bootstrap', as
   assert.equal(await core.restoreSession(), true);
   await core.logout();
   assert.equal(token.getToken(), null);
+  assert.equal(await core.restoreSession(), false);
+  assert.equal(core.acquireLoginLease('pms'), true);
   assert.equal(await core.restoreSession(), true);
   assert.equal(refreshCalls, 2);
 });
@@ -577,6 +582,25 @@ test('logout still broadcasts even when the backend POST fails', async () => {
   const logoutMsg = broadcastMessages.find((m) => m.message?.type === 'LOGOUT');
   assert.ok(logoutMsg, 'expected a LOGOUT broadcast even on POST failure');
   assert.equal(logoutMsg.name, 'auth_platform_sso_channel');
+});
+
+test('replayed LOGOUT events do not keep redirecting an already signed-out tab', () => {
+  resetBrowser();
+  configure({ logoutChannelName: 'auth_platform_sso_channel' });
+  const received = [];
+  const unsubscribe = core.subscribeToAuthEvents((event) => received.push(event));
+  const channel = broadcastChannels.at(-1);
+
+  channel.onmessage({
+    data: { type: 'LOGOUT', clientKey: 'pms', reason: 'user_logout', eventId: 'logout-1' },
+  });
+  channel.onmessage({
+    data: { type: 'LOGOUT', clientKey: 'pms', reason: 'user_logout', eventId: 'logout-2' },
+  });
+
+  assert.equal(received.length, 1);
+  assert.ok(sessionStorage.getItem('auth_platform_logout_boundary'));
+  unsubscribe();
 });
 
 test('logout does not throw when BroadcastChannel is unavailable', async () => {
@@ -665,6 +689,19 @@ test('restoreSession resolves false (no throw) when the cookie refresh is reject
 
   assert.equal(ok, false);
   assert.equal(token.getToken(), null);
+});
+
+test('explicit logged_out URL suppresses bootstrap refresh without an SDK marker', async () => {
+  resetBrowser('https://app.example/login?logged_out=true&reason=user_logout');
+  configure({ legacyTokenTransport: false });
+  let refreshCalls = 0;
+  globalThis.fetch = async () => {
+    refreshCalls += 1;
+    return response({ error: 'BRUTE_FORCE_DETECTED' }, { status: 429, ok: false });
+  };
+
+  assert.equal(await core.restoreSession({ throwOnTransient: true }), false);
+  assert.equal(refreshCalls, 0);
 });
 
 test('restoreSession treats a coded missing session as a definitive logout', async () => {

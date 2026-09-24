@@ -36,6 +36,7 @@ const LOGOUT_REQUEST_TIMEOUT_MS = 8000;
 // delivery/deduplication path so one event cannot be handled twice.
 const AUTH_EVENT_STORAGE_KEY = 'auth_platform_sso_event';
 const AUTH_EVENT_TYPES = new Set(['LOGIN_STARTED', 'LOGIN_COMPLETED', 'LOGOUT', 'SESSION_EXPIRED']);
+const LOGOUT_BOUNDARY_KEY = 'auth_platform_logout_boundary';
 const AUTH_EVENT_STORAGE_POLL_INTERVAL_MS = 1000;
 const LOGIN_COMPLETION_REPLAY_TTL_MS = 30 * 1000;
 const LOGIN_LEASE_KEY = 'auth_platform_login_lease';
@@ -234,8 +235,48 @@ function readAuthEvent(value) {
   }
 }
 
+function readLogoutBoundary() {
+  try {
+    return readAuthEvent(sessionStorage.getItem(LOGOUT_BOUNDARY_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function isLogoutBoundaryActive(clientKey = getConfig().clientKey) {
+  try {
+    if (new URLSearchParams(window.location.search).get('logged_out') === 'true') return true;
+  } catch {
+    // Non-browser consumers may not provide a location.
+  }
+  const boundary = readLogoutBoundary();
+  return Boolean(boundary && (!boundary.clientKey || boundary.clientKey === clientKey));
+}
+
+function markLogoutBoundary(clientKey, reason = 'user_logout') {
+  try {
+    sessionStorage.setItem(LOGOUT_BOUNDARY_KEY, JSON.stringify({
+      clientKey,
+      reason,
+      createdAt: Date.now(),
+    }));
+  } catch {
+    // Restricted storage must not prevent logout.
+  }
+}
+
+function clearLogoutBoundary() {
+  try {
+    sessionStorage.removeItem(LOGOUT_BOUNDARY_KEY);
+  } catch {
+    // Restricted storage must not prevent login.
+  }
+}
+
 function deliverAuthEvent(message) {
   if (!message || typeof message.type !== 'string' || !AUTH_EVENT_TYPES.has(message.type)) return;
+
+  if (message.type === 'LOGOUT' && isLogoutBoundaryActive(message.clientKey)) return;
 
   if (message.eventId) {
     if (seenAuthEventIds.has(message.eventId)) return;
@@ -248,7 +289,13 @@ function deliverAuthEvent(message) {
   // A sibling callback may have just set the HttpOnly refresh cookie. Never
   // let a prior no-session bootstrap result or in-flight refresh suppress or
   // overwrite that recovery attempt.
-  if (message.type === 'LOGIN_COMPLETED') invalidateSessionGeneration();
+  if (message.type === 'LOGOUT') {
+    markLogoutBoundary(message.clientKey, message.reason);
+    invalidateSessionGeneration();
+  } else if (message.type === 'LOGIN_COMPLETED') {
+    clearLogoutBoundary();
+    invalidateSessionGeneration();
+  }
 
   authEventListeners.forEach((listener) => {
     try {
@@ -397,6 +444,16 @@ export function publishAuthEvent(type, payload = {}) {
   if (publishedAuthEventIds.size > 100) {
     publishedAuthEventIds.delete(publishedAuthEventIds.values().next().value);
   }
+
+  if (type === 'LOGOUT') {
+    markLogoutBoundary(safeEvent.clientKey, safeEvent.reason);
+    invalidateSessionGeneration();
+  } else if (type === 'LOGIN_STARTED') {
+    clearLogoutBoundary();
+  } else if (type === 'LOGIN_COMPLETED') {
+    clearLogoutBoundary();
+    invalidateSessionGeneration();
+  }
   const channel = getAuthEventChannel();
 
   try {
@@ -434,9 +491,12 @@ export function acquireLoginLease(clientKey) {
     const createdAt = Date.now();
     const owner = `${createdAt}-${Math.random().toString(36).slice(2)}`;
     localStorage.setItem(LOGIN_LEASE_KEY, JSON.stringify({ clientKey, createdAt, owner }));
-    return readAuthEvent(localStorage.getItem(LOGIN_LEASE_KEY))?.owner === owner;
+    const acquired = readAuthEvent(localStorage.getItem(LOGIN_LEASE_KEY))?.owner === owner;
+    if (acquired) clearLogoutBoundary();
+    return acquired;
   } catch {
     // Storage restrictions must not prevent a user from authenticating.
+    clearLogoutBoundary();
     return true;
   }
 }
@@ -622,6 +682,7 @@ export async function logout(options = {}) {
   });
   emitAuthDiagnostic('LOGOUT_INITIATED', 'PENDING', 'NONE', { clientKey });
 
+  markLogoutBoundary(clientKey, 'user_logout');
   clearToken();
   clearIdToken();
   clearRefreshToken();
@@ -743,6 +804,7 @@ export function handleCallback() {
   callbackProcessed = true;
   clearLoginLock();
   clearLoginLease();
+  clearLogoutBoundary();
   sessionStorage.removeItem('originalApp');
   sessionStorage.removeItem('returnUrl');
 
@@ -982,6 +1044,10 @@ export async function refreshToken() {
 //     matching refreshToken()'s own "don't logout on transient failure" rule.
 export async function restoreSession(options = {}) {
   const throwOnTransient = options?.throwOnTransient === true;
+  if (isLogoutBoundaryActive()) {
+    clearRestoreResultCache();
+    return false;
+  }
   const current = getToken();
   // Treat a token with >10s of life left as usable, matching isAuthenticated().
   if (current && getTimeUntilExpiry(current) > 10) {
